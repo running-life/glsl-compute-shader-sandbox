@@ -1,6 +1,8 @@
 #ifndef _RENDERER_H
 #define _RENDERER_H
 #include <algorithm>
+#include <random>
+#include <vector>
 
 #include "glad/gl.h"
 #include "glm/glm.hpp"
@@ -10,6 +12,13 @@
 #include "gcss/texture.h"
 
 using namespace gcss;
+
+struct SphereData {
+  glm::vec3 center;
+  float radius;
+  glm::vec3 color;
+  float padding; // For alignment
+};
 
 class Renderer {
  private:
@@ -21,6 +30,11 @@ class Renderer {
   float sphereRadius;
   glm::vec3 sphereColor;
   glm::vec3 backgroundColor;
+
+  // multi spheres
+  std::vector<SphereData> spheres;
+  GLuint sphereBuffer;
+  static constexpr int MAX_SPHERES = 64;
 
   // Multi-pass rendering textures
   Texture primaryTexture;    // First pass output
@@ -132,6 +146,35 @@ private:
     // Memory barrier to ensure pass 1 is complete before pass 2
     glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
   }
+
+  void renderPass1RayMarching() {
+    // Bind output texture
+    primaryTexture.bindToImageUnit(0, GL_WRITE_ONLY);
+    
+    // Bind sphere buffer
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, sphereBuffer);
+    
+    // Set uniforms
+    rayTracingShader.setUniform("cameraPosition", camera.camPos);
+    rayTracingShader.setUniform("cameraFront", camera.camForward);
+    rayTracingShader.setUniform("cameraUp", camera.camUp);
+    rayTracingShader.setUniform("cameraRight", camera.camRight);
+    rayTracingShader.setUniform("backgroundColor", backgroundColor);
+    
+    rayTracingPipeline.activate();
+    glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, 1, -1, "Pass 1: Ray Tracing");
+    glDispatchCompute(std::ceil(resolution.x / 8.0f),
+                      std::ceil(resolution.y / 8.0f), 1);
+    glPopDebugGroup();
+    rayTracingPipeline.deactivate();
+
+    // Memory barrier to ensure pass 1 is complete before pass 2
+    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+  }
+
+  void renderPass2RayMarching() {
+
+  }
   
   void renderPass2_PostProcess() {
     // Bind input texture from pass 1
@@ -172,8 +215,82 @@ private:
     glPopDebugGroup();
   }
 
+  void generateCloudSpheres() {
+    spheres.clear();
+    
+    std::mt19937 gen(10);
+
+   // Cloud-like distribution parameters
+   std::uniform_real_distribution<float> xDist(-100.0f, 100.0f);
+   std::uniform_real_distribution<float> yDist(100.0f, 1000.0f);   // Higher in the sky
+   std::uniform_real_distribution<float> zDist(100.0f, 4000.0f); // Spread in depth
+   std::uniform_real_distribution<float> radiusDist(5.0f, 20.0f); // Varied cloud sizes
+   std::uniform_real_distribution<float> densityDist(0.0f, 1.0f);
+   
+   // Cloud color variations (white to light gray)
+   std::uniform_real_distribution<float> brightnessVariation(0.7f, 1.0f);
+   std::uniform_real_distribution<float> colorTint(0.95f, 1.0f); // Slight blue/warm tint
+   
+   for (int i = 0; i < MAX_SPHERES; i++) {
+     SphereData sphere;
+     
+     // Position: scattered in sky-like formation
+     sphere.center.x = xDist(gen);
+     sphere.center.y = yDist(gen);
+     sphere.center.z = zDist(gen);
+     
+     // Add some clustering effect for more realistic cloud formation
+     if (densityDist(gen) < 0.3f) { // 30% chance for clustered clouds
+       // Create clusters near existing spheres
+       if (!spheres.empty()) {
+         int clusterTarget = gen() % spheres.size();
+         sphere.center.x = spheres[clusterTarget].center.x + std::uniform_real_distribution<float>(-8.0f, 8.0f)(gen);
+         sphere.center.y = spheres[clusterTarget].center.y + std::uniform_real_distribution<float>(-3.0f, 3.0f)(gen);
+         sphere.center.z = spheres[clusterTarget].center.z + std::uniform_real_distribution<float>(-5.0f, 5.0f)(gen);
+       }
+     }
+     
+     // Size: varied like real clouds
+     sphere.radius = radiusDist(gen);
+     
+     // Color: cloud-like whites and light grays with subtle variations
+     float brightness = brightnessVariation(gen);
+     float rTint = colorTint(gen);
+     float gTint = colorTint(gen);
+     float bTint = std::uniform_real_distribution<float>(0.98f, 1.0f)(gen); // Slightly more blue
+     
+     sphere.color = glm::vec3(brightness * rTint, brightness * gTint, brightness * bTint);
+     sphere.padding = 0.0f;
+     
+     spheres.push_back(sphere);
+   }
+  }
+
+  void createSphereBuffer() {
+    glGenBuffers(1, &sphereBuffer);
+    updateSphereBuffer();
+  }
+
+  void updateSphereBuffer() {
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, sphereBuffer);
+    
+    // Create buffer data: first int for count, then sphere array
+    size_t bufferSize = sizeof(int) + spheres.size() * sizeof(SphereData);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, bufferSize, nullptr, GL_DYNAMIC_DRAW);
+    
+    // Upload sphere count
+    int numSpheres = static_cast<int>(spheres.size());
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(int), &numSpheres);
+    
+    // Upload sphere data
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, sizeof(int), 
+                    spheres.size() * sizeof(SphereData), spheres.data());
+    
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+  }
+
 private:
-  bool debugShowPass1 = false; // 调试开关
+  bool debugShowPass1 = false;
 
 public:
   void setDebugShowPass1(bool show) { debugShowPass1 = show; }
