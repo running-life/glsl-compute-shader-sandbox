@@ -15,6 +15,9 @@
 
 Renderer *RENDERER;
 
+const glm::uint windowWidth = 1000;
+const glm::uint windowHeight = 1000;
+
 static void glfwErrorCallback(int error, const char *description)
 {
   fprintf(stderr, "Glfw Error %d: %s\n", error, description);
@@ -100,7 +103,7 @@ int main()
 #endif
 
   GLFWwindow *window =
-      glfwCreateWindow(512, 512, "ray-tracing", nullptr, nullptr);
+      glfwCreateWindow(windowWidth, windowHeight, "ray-tracing", nullptr, nullptr);
   if (!window)
   {
     return -1;
@@ -134,6 +137,9 @@ int main()
 
   // init renderer
   RENDERER = new Renderer();
+
+  glm::uvec2 resolution = {windowWidth, windowHeight};
+  RENDERER->setResolution(resolution);
 
   while (!glfwWindowShouldClose(window))
   {
@@ -175,6 +181,13 @@ int main()
       {
         RENDERER->setBackgroundColor(background_color);
       }
+
+      static bool debugShowPass1 = false;
+      if (ImGui::Checkbox("Debug Show Pass 1", &debugShowPass1))
+      {
+        RENDERER->setDebugShowPass1(debugShowPass1);
+      }
+
     }
     ImGui::End();
 
