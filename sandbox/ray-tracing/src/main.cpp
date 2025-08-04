@@ -182,7 +182,7 @@ int main()
         RENDERER->setBackgroundColor(background_color);
       }
 
-      static bool debugShowPass1 = false;
+      static bool debugShowPass1 = true;
       if (ImGui::Checkbox("Debug Show Pass 1", &debugShowPass1))
       {
         RENDERER->setDebugShowPass1(debugShowPass1);
