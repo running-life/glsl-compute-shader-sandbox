@@ -16,7 +16,7 @@ enum class CameraMovement {
 };
 
 class Camera {
- private:
+ public:
   glm::vec3 camPos;
   glm::vec3 camForward;
   glm::vec3 camRight;

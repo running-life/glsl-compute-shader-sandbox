@@ -163,7 +163,9 @@ class Renderer {
       updateParticles.setUniform("k", k);
       updateParticles.setUniform("dt", dt);
       updateParticlesPipeline.activate();
+      glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, 1, -1, "Computeshader");
       glDispatchCompute(std::ceil(nParticles / 128.0f), 1, 1);
+      glPopDebugGroup();
       updateParticlesPipeline.deactivate();
     }
   }

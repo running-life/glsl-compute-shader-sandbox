@@ -1,4 +1,11 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.1...3.20)
+
+set(CMAKE_POLICY_VERSION_MINIMUM 3.20 CACHE STRING "" FORCE)
+
+foreach(POLICY ${CMAKE_POLICY_DEFAULTS})
+    cmake_policy(SET ${POLICY} NEW)  # 强制所有策略使用新行为
+endforeach()
+
 project(atmos LANGUAGES C CXX)
 
 option(BUILD_TESTS "build tests" OFF)
