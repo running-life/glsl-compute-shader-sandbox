@@ -50,6 +50,12 @@ class Renderer {
   Pipeline postProcessPipeline;
   
   // Pass 3: Final display
+  
+  // Pass 2: Post-processing (denoising, tone mapping, etc.)
+  ComputeShader postProcessShader;
+  Pipeline postProcessPipeline;
+  
+  // Pass 3: Final display
   Quad quad;
   VertexShader vertexShader;
   FragmentShader fragmentShader;
@@ -65,8 +71,13 @@ class Renderer {
         primaryTexture{glm::vec2(512, 512), GL_RGBA32F, GL_RGBA, GL_FLOAT},
         secondaryTexture{glm::vec2(512, 512), GL_RGBA32F, GL_RGBA, GL_FLOAT},
         finalTexture{glm::vec2(512, 512), GL_RGBA32F, GL_RGBA, GL_FLOAT},
+        primaryTexture{glm::vec2(512, 512), GL_RGBA32F, GL_RGBA, GL_FLOAT},
+        secondaryTexture{glm::vec2(512, 512), GL_RGBA32F, GL_RGBA, GL_FLOAT},
+        finalTexture{glm::vec2(512, 512), GL_RGBA32F, GL_RGBA, GL_FLOAT},
         rayTracingShader(std::filesystem::path(CMAKE_CURRENT_SOURCE_DIR) /
                          "shaders" / "ray-tracing.comp"),
+        postProcessShader(std::filesystem::path(CMAKE_CURRENT_SOURCE_DIR) /
+                          "shaders" / "post-process.comp"),
         postProcessShader(std::filesystem::path(CMAKE_CURRENT_SOURCE_DIR) /
                           "shaders" / "post-process.comp"),
         vertexShader(std::filesystem::path(CMAKE_CURRENT_SOURCE_DIR) /
@@ -74,7 +85,10 @@ class Renderer {
         fragmentShader(std::filesystem::path(CMAKE_CURRENT_SOURCE_DIR) /
                        "shaders" / "render.frag") {
     // Setup pipelines
+    // Setup pipelines
     rayTracingPipeline.attachComputeShader(rayTracingShader);
+    postProcessPipeline.attachComputeShader(postProcessShader);
+    
     postProcessPipeline.attachComputeShader(postProcessShader);
     
     renderPipeline.attachVertexShader(vertexShader);
@@ -85,6 +99,9 @@ class Renderer {
 
   void setResolution(const glm::uvec2& resolution) {
     this->resolution = resolution;
+    primaryTexture.resize(resolution);
+    secondaryTexture.resize(resolution);
+    finalTexture.resize(resolution);
     primaryTexture.resize(resolution);
     secondaryTexture.resize(resolution);
     finalTexture.resize(resolution);
@@ -111,6 +128,20 @@ class Renderer {
   }
 
   void render() {
+    // Pass 1: Primary ray tracing
+    renderPass1_RayTracing();
+    
+    // Pass 2: Post-processing
+    renderPass2_PostProcess();
+    
+    // Pass 3: Final display
+    renderPass3_Display();
+  }
+
+private:
+  void renderPass1_RayTracing() {
+    // Bind output texture
+    primaryTexture.bindToImageUnit(0, GL_WRITE_ONLY);
     // Pass 1: Primary ray tracing
     renderPass1_RayTracing();
     
@@ -199,6 +230,10 @@ private:
   
   void renderPass3_Display() {
     // Clear and setup viewport
+  }
+  
+  void renderPass3_Display() {
+    // Clear and setup viewport
     glClear(GL_COLOR_BUFFER_BIT);
     glViewport(0, 0, resolution.x, resolution.y);
     
@@ -211,7 +246,18 @@ private:
     
     // Draw quad
     glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, 3, -1, "Pass 3: Display");
+    
+    // Choose which texture to display (for debugging)
+    if (debugShowPass1) {
+      primaryTexture.bindToTextureUnit(0);
+    } else {
+      finalTexture.bindToTextureUnit(0);
+    }
+    
+    // Draw quad
+    glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, 3, -1, "Pass 3: Display");
     quad.draw(renderPipeline);
+    glPopDebugGroup();
     glPopDebugGroup();
   }
 
