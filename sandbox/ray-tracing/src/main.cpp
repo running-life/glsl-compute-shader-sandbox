@@ -29,10 +29,11 @@ void GLAPIENTRY debugMessageCallback(
     if (type == GL_DEBUG_TYPE_ERROR) {
         spdlog::error(
             "[GL] type = 0x{:x}, severity = 0x{:x}, message = {}", type, severity, message);
-    } else {
-        spdlog::info(
-            "[GL] type = 0x{:x}, severity = 0x{:x}, message = {}", type, severity, message);
-    }
+    } 
+    // else {
+    //     spdlog::info(
+    //         "[GL] type = 0x{:x}, severity = 0x{:x}, message = {}", type, severity, message);
+    // }
 }
 
 static void framebufferSizeCallback([[maybe_unused]] GLFWwindow* window, int width, int height) {

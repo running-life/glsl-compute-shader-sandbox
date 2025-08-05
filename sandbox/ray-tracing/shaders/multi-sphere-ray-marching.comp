@@ -16,7 +16,8 @@ uniform vec3 aabbMax;
 
 uniform bool useAccelerationStructure;
 uniform float cellSize;
-const uint HASH_TABLE_SIZE = 4096;
+const uint HASH_TABLE_SIZE = 4096 * 16;
+const float stepSize = 50;
 
 struct Sphere {
     vec4 centerAndRadius;
@@ -64,6 +65,14 @@ bool isBitSet(uvec2 mask, uint bit) {
     return (mask[wordIndex] & (1u << bitInWord)) != 0u;
 }
 
+// some funtion to cost time
+float computeCostFunction(vec3 sphereCenter, float sphereRadius) {
+    float tempa = sin(sphereCenter.x) / max(sphereRadius, 1);
+    float tempb = cos(sphereCenter.y) / max(sphereRadius, 1);
+    float tempc = sin(sphereCenter.z) / max(sphereRadius, 1);
+    return tempa * tempb * tempc;
+}
+
 // Ray-AABB intersection function
 // Returns tMin, tMax values along ray
 bool rayAABBIntersection(vec3 rayOrigin, vec3 rayDir, vec3 boxMin, vec3 boxMax, out float tMin, out float tMax) {
@@ -106,37 +115,13 @@ void main() {
     float tMin, tMax;
     if (rayAABBIntersection(cameraPosition, rayDirection, aabbMin, aabbMax, tMin, tMax)) {
         // Ray marching parameters
-        float stepSize = (tMax - tMin) / 50.0; // 50 steps through volume
+        // float stepSize = (tMax - tMin) / 50.0; // 50 steps through volume
         float t = max(tMin, 0.0);              // Start at entry point or camera if inside
         
         // Color accumulation
         float density = 0.0;
         float maxDensity = 10.0; // For normalization
         
-        // March through the volume
-        // while (t < tMax) {
-        //     vec3 samplePoint = cameraPosition + t * rayDirection;
-        //     int sphereCount = 0;
-            
-        //     // Check how many spheres contain this point
-        //     for (int i = 0; i < numSpheres; i++) {
-        //         vec3 sphereCenter = spheres[i].centerAndRadius.xyz;
-        //         float sphereRadius = spheres[i].centerAndRadius.w;
-                
-        //         if (isPointInSphere(samplePoint, sphereCenter, sphereRadius)) {
-        //             sphereCount++;
-        //             // Optional: accumulate color from each sphere
-        //             // density += some_value_based_on_sphere;
-        //         }
-        //     }
-            
-        //     // Accumulate density
-        //     density += float(sphereCount);
-            
-        //     // Take next step
-        //     t += stepSize;
-        // }
-
         while (t < tMax) {
             vec3 samplePoint = cameraPosition + t * rayDirection;
             int sphereCount = 0;
@@ -154,6 +139,8 @@ void main() {
                     if (isBitSet(sphereMask, i)) {
                         vec3 sphereCenter = spheres[i].centerAndRadius.xyz;
                         float sphereRadius = spheres[i].centerAndRadius.w;
+
+                        computeCostFunction(sphereCenter, sphereRadius);
                         
                         if (distance(samplePoint, sphereCenter) <= sphereRadius) {
                             sphereCount++;
@@ -165,6 +152,8 @@ void main() {
                 for (int i = 0; i < numSpheres; i++) {
                     vec3 sphereCenter = spheres[i].centerAndRadius.xyz;
                     float sphereRadius = spheres[i].centerAndRadius.w;
+
+                    computeCostFunction(sphereCenter, sphereRadius);
                     
                     if (distance(samplePoint, sphereCenter) <= sphereRadius) {
                         sphereCount++;

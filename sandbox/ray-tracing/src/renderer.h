@@ -80,8 +80,8 @@ private:
     Pipeline renderPipeline;
 
     // Spatial hash parameters
-    static constexpr int HASH_TABLE_SIZE = 4096; // Should be power of 2
-    static constexpr float CELL_SIZE = 100.0f;   // Size of each grid cell
+    static constexpr int HASH_TABLE_SIZE = 4096 * 16; // Should be power of 2
+    static constexpr float CELL_SIZE = 10.0f;   // Size of each grid cell
     bool useAccelerationStructure = true;        // Toggle acceleration
     GLuint hashTableBuffer = 0;                  // OpenGL buffer for hash table
 
@@ -183,15 +183,6 @@ public:
     }
 
     void render() {
-        // // Pass 1: Primary ray tracing
-        // renderPass1_RayTracing();
-
-        // // Pass 2: Post-processing
-        // renderPass2_PostProcess();
-
-        // // Pass 3: Final display
-        // renderPass3_Display();
-
         if (useAccelerationStructure) {
             // Build spatial hash table
             buildSpatialHash();
@@ -286,7 +277,9 @@ private:
         rayTracingShader.setUniform("aabbMax", aabbMax);
 
         rayTracingPipeline.activate();
+        glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, 2, -1, "mult sphere Ray Marching");
         glDispatchCompute(std::ceil(resolution.x / 8.0f), std::ceil(resolution.y / 8.0f), 1);
+        glPopDebugGroup();
         rayTracingPipeline.deactivate();
 
         glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
@@ -311,7 +304,9 @@ private:
 
         // Dispatch shader - one thread per sphere
         hashBuildPipeline.activate();
+        glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, 1, -1, "Build Spatial Hash");
         glDispatchCompute(std::ceil(MAX_SPHERES / 64.0f), 1, 1);
+        glPopDebugGroup();
         hashBuildPipeline.deactivate();
 
         // Memory barrier
@@ -329,7 +324,7 @@ private:
         postProcessShader.setUniform("gamma", 2.2f);
 
         postProcessPipeline.activate();
-        glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, 2, -1, "Pass 2: Post Process");
+        glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, 3, -1, "Post Process");
         glDispatchCompute(std::ceil(resolution.x / 8.0f), std::ceil(resolution.y / 8.0f), 1);
         glPopDebugGroup();
         postProcessPipeline.deactivate();
