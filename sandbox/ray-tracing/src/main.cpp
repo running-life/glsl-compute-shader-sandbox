@@ -29,7 +29,7 @@ void GLAPIENTRY debugMessageCallback(
     if (type == GL_DEBUG_TYPE_ERROR) {
         spdlog::error(
             "[GL] type = 0x{:x}, severity = 0x{:x}, message = {}", type, severity, message);
-    } 
+    }
     // else {
     //     spdlog::info(
     //         "[GL] type = 0x{:x}, severity = 0x{:x}, message = {}", type, severity, message);
@@ -138,29 +138,9 @@ int main() {
 
             ImGui::Separator();
 
-            static glm::vec3 sphere_center = RENDERER->getSphereCenter();
-            if (ImGui::InputFloat3("Sphere Center", glm::value_ptr(sphere_center))) {
-                RENDERER->setSphereCenter(sphere_center);
-            }
-
-            static float sphere_radius = RENDERER->getSphereRadius();
-            if (ImGui::InputFloat("Sphere Radius", &sphere_radius)) {
-                RENDERER->setSphereRadius(sphere_radius);
-            }
-
-            static glm::vec3 sphere_color = RENDERER->getSphereColor();
-            if (ImGui::ColorPicker3("Sphere Color", glm::value_ptr(sphere_color))) {
-                RENDERER->setSphereColor(sphere_color);
-            }
-
             static glm::vec3 background_color = RENDERER->getBackgroundColor();
             if (ImGui::ColorPicker3("Background Color", glm::value_ptr(background_color))) {
                 RENDERER->setBackgroundColor(background_color);
-            }
-
-            static bool debugShowPass1 = true;
-            if (ImGui::Checkbox("Debug Show Pass 1", &debugShowPass1)) {
-                RENDERER->setDebugShowPass1(debugShowPass1);
             }
 
             static bool useAccelerationStructure = RENDERER->getUseAccelerationStructure();

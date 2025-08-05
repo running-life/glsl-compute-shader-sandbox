@@ -49,10 +49,6 @@ private:
     glm::uvec2 resolution;
     Camera camera;
 
-    // Sphere parameters
-    glm::vec3 sphereCenter;
-    float sphereRadius;
-    glm::vec3 sphereColor;
     glm::vec3 backgroundColor;
 
     // multi spheres
@@ -61,19 +57,17 @@ private:
     static constexpr int MAX_SPHERES = 64;
 
     // Multi-pass rendering textures
-    Texture primaryTexture;   // First pass output
-    Texture secondaryTexture; // Second pass output
-    Texture finalTexture;     // Final output
+    Texture primaryTexture; // First pass output
 
-    // Pass 1: Primary ray tracing
+    // Pass: Primary ray tracing
     ComputeShader rayTracingShader;
     Pipeline rayTracingPipeline;
 
-    // Pass 2: Post-processing (denoising, tone mapping, etc.)
+    // Pass: Post-processing (denoising, tone mapping, etc.)
     ComputeShader postProcessShader;
     Pipeline postProcessPipeline;
 
-    // Pass 3: Final display
+    // Pass: Final display
     Quad quad;
     VertexShader vertexShader;
     FragmentShader fragmentShader;
@@ -81,9 +75,9 @@ private:
 
     // Spatial hash parameters
     static constexpr int HASH_TABLE_SIZE = 4096 * 16; // Should be power of 2
-    static constexpr float CELL_SIZE = 10.0f;   // Size of each grid cell
-    bool useAccelerationStructure = true;        // Toggle acceleration
-    GLuint hashTableBuffer = 0;                  // OpenGL buffer for hash table
+    static constexpr float CELL_SIZE = 10.0f;         // Size of each grid cell
+    bool useAccelerationStructure = true;             // Toggle acceleration
+    GLuint hashTableBuffer = 0;                       // OpenGL buffer for hash table
 
     // Compute shader for building the hash table
     ComputeShader hashBuildShader;
@@ -91,11 +85,7 @@ private:
 
 public:
     Renderer()
-        : resolution{512, 512}, sphereCenter{0.0f, 0.0f, -5.0f}, sphereRadius{1.0f},
-          sphereColor{0.8f, 0.3f, 0.3f}, backgroundColor{0.1f, 0.1f, 0.2f},
-          primaryTexture{glm::vec2(512, 512), GL_RGBA32F, GL_RGBA, GL_FLOAT},
-          secondaryTexture{glm::vec2(512, 512), GL_RGBA32F, GL_RGBA, GL_FLOAT},
-          finalTexture{glm::vec2(512, 512), GL_RGBA32F, GL_RGBA, GL_FLOAT},
+        : resolution{512, 512}, primaryTexture{glm::vec2(512, 512), GL_RGBA32F, GL_RGBA, GL_FLOAT},
           rayTracingShader(
               std::filesystem::path(CMAKE_CURRENT_SOURCE_DIR) / "shaders"
               / "multi-sphere-ray-marching.comp"),
@@ -139,39 +129,17 @@ public:
         return this->resolution;
     }
 
-    void setResolution(const glm::uvec2& resolution) {
-        this->resolution = resolution;
-        primaryTexture.resize(resolution);
-        secondaryTexture.resize(resolution);
-        finalTexture.resize(resolution);
+    void setResolution(const glm::uvec2& resolutionArg) {
+        this->resolution = resolutionArg;
+        primaryTexture.resize(resolutionArg);
     }
 
-    glm::vec3 getSphereCenter() const {
-        return sphereCenter;
-    }
-    void setSphereCenter(const glm::vec3& center) {
-        this->sphereCenter = center;
-    }
-
-    float getSphereRadius() const {
-        return sphereRadius;
-    }
-    void setSphereRadius(float radius) {
-        this->sphereRadius = std::max(0.01f, radius);
-    }
-
-    glm::vec3 getSphereColor() const {
-        return sphereColor;
-    }
-    void setSphereColor(const glm::vec3& color) {
-        this->sphereColor = color;
+    void setBackgroundColor(const glm::vec3& color) {
+        backgroundColor = color;
     }
 
     glm::vec3 getBackgroundColor() const {
         return backgroundColor;
-    }
-    void setBackgroundColor(const glm::vec3& color) {
-        this->backgroundColor = color;
     }
 
     void move(const CameraMovement& movement_direction, float delta_time) {
@@ -189,67 +157,15 @@ public:
         }
 
         // ray marching multiple spheres
-        renderPassRayMarching2();
-        // Pass 2: Post-processing
-        renderPass2_PostProcess();
-        // Pass 3: Final display
-        renderPass3_Display();
+        renderPassRayMarching();
+
+        // Final display
+        renderPassDisplay();
     }
 
 private:
-    // render one sphere with ray tracing
-    void renderPass1_RayTracing() {
-        // Bind output texture
-        primaryTexture.bindToImageUnit(0, GL_WRITE_ONLY);
-
-        // Set uniforms
-        rayTracingShader.setUniform("cameraPosition", camera.camPos);
-        rayTracingShader.setUniform("cameraFront", camera.camForward);
-        rayTracingShader.setUniform("cameraUp", camera.camUp);
-        rayTracingShader.setUniform("cameraRight", camera.camRight);
-        rayTracingShader.setUniform("sphereCenter", sphereCenter);
-        rayTracingShader.setUniform("sphereRadius", sphereRadius);
-        rayTracingShader.setUniform("sphereColor", sphereColor);
-        rayTracingShader.setUniform("backgroundColor", backgroundColor);
-
-        rayTracingPipeline.activate();
-        glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, 1, -1, "Pass 1: Ray Tracing");
-        glDispatchCompute(std::ceil(resolution.x / 8.0f), std::ceil(resolution.y / 8.0f), 1);
-        glPopDebugGroup();
-        rayTracingPipeline.deactivate();
-
-        // Memory barrier to ensure pass 1 is complete before pass 2
-        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
-    }
-
     // render multiple spheres with ray marching
     void renderPassRayMarching() {
-        // Bind output texture
-        primaryTexture.bindToImageUnit(0, GL_WRITE_ONLY);
-
-        // Bind sphere buffer - add safety check
-        if (sphereBuffer != 0) {
-            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, sphereBuffer);
-        }
-
-        // Set uniforms
-        rayTracingShader.setUniform("cameraPosition", camera.camPos);
-        rayTracingShader.setUniform("cameraFront", camera.camForward);
-        rayTracingShader.setUniform("cameraUp", camera.camUp);
-        rayTracingShader.setUniform("cameraRight", camera.camRight);
-        rayTracingShader.setUniform("backgroundColor", backgroundColor);
-
-        rayTracingPipeline.activate();
-        // glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, 4, -1, "mult sphere Ray Marching");
-        glDispatchCompute(std::ceil(resolution.x / 8.0f), std::ceil(resolution.y / 8.0f), 1);
-        // glPopDebugGroup();
-        rayTracingPipeline.deactivate();
-
-        // Memory barrier to ensure pass 1 is complete before pass 2
-        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
-    }
-
-    void renderPassRayMarching2() {
         // Bind output texture
         primaryTexture.bindToImageUnit(0, GL_WRITE_ONLY);
 
@@ -313,45 +229,16 @@ private:
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
     }
 
-    void renderPass2_PostProcess() {
-        // Bind input texture from pass 1
-        primaryTexture.bindToImageUnit(0, GL_READ_ONLY);
-        // Bind output texture for this pass
-        finalTexture.bindToImageUnit(1, GL_WRITE_ONLY);
-
-        // Set post-processing uniforms (e.g., exposure, gamma correction)
-        postProcessShader.setUniform("exposure", 1.0f);
-        postProcessShader.setUniform("gamma", 2.2f);
-
-        postProcessPipeline.activate();
-        glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, 3, -1, "Post Process");
-        glDispatchCompute(std::ceil(resolution.x / 8.0f), std::ceil(resolution.y / 8.0f), 1);
-        glPopDebugGroup();
-        postProcessPipeline.deactivate();
-
-        // Memory barrier to ensure pass 2 is complete before pass 3
-        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
-    }
-
-    void renderPass3_Display() {
+    void renderPassDisplay() {
         // Clear and setup viewport
         glClear(GL_COLOR_BUFFER_BIT);
         glViewport(0, 0, resolution.x, resolution.y);
 
-        // Draw quad
-        glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, 3, -1, "Pass 3: Display");
-
-        // Choose which texture to display (for debugging)
-        if (debugShowPass1) {
-            primaryTexture.bindToTextureUnit(0);
-        } else {
-            finalTexture.bindToTextureUnit(0);
-        }
+        primaryTexture.bindToTextureUnit(0);
 
         // Draw quad
-        glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, 3, -1, "Pass 3: Display");
+        glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, 3, -1, "Display");
         quad.draw(renderPipeline);
-        glPopDebugGroup();
         glPopDebugGroup();
     }
 
@@ -424,6 +311,7 @@ private:
         updateSphereBuffer();
     }
 
+    // TODO: discard the struct SphereData and use SphereDataPacked instead
     void updateSphereBuffer() {
         if (sphereBuffer == 0) {
             std::cerr << "Sphere buffer not created!" << std::endl;
@@ -508,14 +396,10 @@ private:
     }
 
 private:
-    bool debugShowPass1 = false;
     glm::vec3 aabbMin;
     glm::vec3 aabbMax;
 
 public:
-    void setDebugShowPass1(bool show) {
-        debugShowPass1 = show;
-    }
     void setUseAccelerationStructure(bool use) {
         useAccelerationStructure = use;
     }
