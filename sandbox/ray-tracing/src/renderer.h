@@ -11,38 +11,9 @@
 #include "gcss/quad.h"
 #include "gcss/texture.h"
 
+#include "bvh.h"
+
 using namespace gcss;
-
-// struct SphereData {
-//   glm::vec3 center;
-//   float radius;
-//   glm::vec3 color;
-//   float padding; // For alignment
-// };
-
-struct SphereData {
-    // Explicitly use individual floats instead of vec3
-    float centerX, centerY, centerZ;
-    float radius;
-    float colorR, colorG, colorB;
-    float padding;
-
-    // Constructor for convenience
-    SphereData(const glm::vec3& center, float r, const glm::vec3& color)
-        : centerX(center.x), centerY(center.y), centerZ(center.z), radius(r), colorR(color.r),
-          colorG(color.g), colorB(color.b), padding(0.0f) {}
-
-    SphereData() = default;
-};
-
-struct SphereDataPacked {
-    glm::vec4 centerAndRadius;
-    glm::vec4 color;
-
-    SphereDataPacked(const SphereData& data)
-        : centerAndRadius(data.centerX, data.centerY, data.centerZ, data.radius),
-          color(data.colorR, data.colorG, data.colorB, data.padding) {}
-};
 
 class Renderer {
 private:
@@ -53,8 +24,15 @@ private:
 
     // multi spheres
     std::vector<SphereData> spheres;
+    std::vector<SphereDataPacked> packedSpheres;
     GLuint sphereBuffer = 0;
     static constexpr int MAX_SPHERES = 64;
+
+    // BVH
+    BVH bvh;
+    GLuint bvhBuffer = 0;
+    GLuint sphereIndexBuffer = 0;
+    bool useBVH = false;
 
     // Multi-pass rendering textures
     Texture primaryTexture; // First pass output
@@ -76,7 +54,7 @@ private:
     // Spatial hash parameters
     static constexpr int HASH_TABLE_SIZE = 4096 * 16; // Should be power of 2
     static constexpr float CELL_SIZE = 10.0f;         // Size of each grid cell
-    bool useAccelerationStructure = true;             // Toggle acceleration
+    bool useSpatialHash = true;                       // Toggle acceleration
     GLuint hashTableBuffer = 0;                       // OpenGL buffer for hash table
 
     // Compute shader for building the hash table
@@ -88,7 +66,7 @@ public:
         : resolution{512, 512}, primaryTexture{glm::vec2(512, 512), GL_RGBA32F, GL_RGBA, GL_FLOAT},
           rayTracingShader(
               std::filesystem::path(CMAKE_CURRENT_SOURCE_DIR) / "shaders"
-              / "multi-sphere-ray-marching.comp"),
+              / "ray-marching-bvh.comp"),
           postProcessShader(
               std::filesystem::path(CMAKE_CURRENT_SOURCE_DIR) / "shaders" / "post-process.comp"),
           vertexShader(std::filesystem::path(CMAKE_CURRENT_SOURCE_DIR) / "shaders" / "render.vert"),
@@ -110,6 +88,10 @@ public:
 
         // create hash table buffer
         createHashTableBuffer();
+
+        // create BVH buffer
+        createBVHBuffer();
+        buildBVH();
     }
 
     ~Renderer() {
@@ -122,6 +104,12 @@ public:
         if (hashTableBuffer != 0) {
             glDeleteBuffers(1, &hashTableBuffer);
             hashTableBuffer = 0;
+        }
+        if (bvhBuffer != 0) {
+            glDeleteBuffers(1, &bvhBuffer);
+        }
+        if (sphereIndexBuffer != 0) {
+            glDeleteBuffers(1, &sphereIndexBuffer);
         }
     }
 
@@ -151,10 +139,14 @@ public:
     }
 
     void render() {
-        if (useAccelerationStructure) {
+        if (useSpatialHash) {
             // Build spatial hash table
             buildSpatialHash();
         }
+
+        // if (useBVH) {
+        //     buildBVH();
+        // }
 
         // ray marching multiple spheres
         renderPassRayMarching();
@@ -175,12 +167,22 @@ private:
         }
 
         // Bind hash table if using acceleration
-        if (useAccelerationStructure) {
+        if (useSpatialHash) {
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, hashTableBuffer);
         }
 
+        if (useBVH) {
+            if (bvhBuffer != 0 && sphereIndexBuffer != 0 && !bvh.getGPUNodes().empty()) {
+                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, bvhBuffer);
+                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, sphereIndexBuffer);
+            } else {
+                useBVH = false;
+            }
+        }
+
         // Pass acceleration toggle to shader
-        rayTracingShader.setUniform("useAccelerationStructure", useAccelerationStructure);
+        rayTracingShader.setUniform("useSpatialHash", useSpatialHash);
+        rayTracingShader.setUniform("useBVH", useBVH);
         rayTracingShader.setUniform("cellSize", CELL_SIZE);
 
         // Set uniforms - add AABB data
@@ -227,6 +229,34 @@ private:
 
         // Memory barrier
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    }
+
+    void buildBVH() {
+        bvh.build(packedSpheres);
+        // bvh.printStats();
+
+        const auto& nodes = bvh.getGPUNodes();
+        const auto& indices = bvh.getGPUSphereIndices();
+
+        const GLintptr bvhDataOffset = 16;
+
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, bvhBuffer);
+        glBufferData(
+            GL_SHADER_STORAGE_BUFFER, 16 + nodes.size() * sizeof(BVHNodeGPU), nullptr,
+            GL_DYNAMIC_DRAW);
+
+        int nodeCount = static_cast<int>(nodes.size());
+        glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(int), &nodeCount);
+        glBufferSubData(
+            GL_SHADER_STORAGE_BUFFER, bvhDataOffset, nodes.size() * sizeof(BVHNodeGPU),
+            nodes.data());
+
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, sphereIndexBuffer);
+        glBufferData(
+            GL_SHADER_STORAGE_BUFFER, indices.size() * sizeof(uint32_t), indices.data(),
+            GL_DYNAMIC_DRAW);
+
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
     }
 
     void renderPassDisplay() {
@@ -296,6 +326,11 @@ private:
             spheres.push_back(sphere);
         }
 
+        packedSpheres.reserve(spheres.size());
+        for (const auto& sphere : spheres) {
+            packedSpheres.emplace_back(sphere);
+        }
+
         // Override the first sphere with specific values
         // spheres[0].centerX = 0.0f;
         // spheres[0].centerY = 0.0f;
@@ -319,13 +354,6 @@ private:
         }
 
         calculateAABB();
-
-        // create sphere data packed
-        std::vector<SphereDataPacked> packedSpheres;
-        packedSpheres.reserve(spheres.size());
-        for (const auto& sphere : spheres) {
-            packedSpheres.emplace_back(sphere);
-        }
 
         // Bind the buffer
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, sphereBuffer);
@@ -395,17 +423,30 @@ private:
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
     }
 
+    void createBVHBuffer() {
+        glGenBuffers(1, &bvhBuffer);
+        glGenBuffers(1, &sphereIndexBuffer);
+    }
+
 private:
     glm::vec3 aabbMin;
     glm::vec3 aabbMax;
 
 public:
-    void setUseAccelerationStructure(bool use) {
-        useAccelerationStructure = use;
+    void setUseSpatialHash(bool use) {
+        useSpatialHash = use;
     }
 
-    bool getUseAccelerationStructure() const {
-        return useAccelerationStructure;
+    bool getUseSpatialHash() const {
+        return useSpatialHash;
+    }
+
+    void setUseBVH(bool use) {
+        useBVH = use;
+    }
+
+    bool getUseBVH() const {
+        return useBVH;
     }
 
 public:

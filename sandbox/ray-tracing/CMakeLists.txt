@@ -1,4 +1,4 @@
-add_executable(ray-tracing "src/main.cpp")
+add_executable(ray-tracing "src/main.cpp" "src/bvh.cpp")
 target_compile_features(ray-tracing PRIVATE cxx_std_20)
 set_target_properties(ray-tracing PROPERTIES CXX_EXTENSIONS OFF)
 target_include_directories(ray-tracing PRIVATE src)

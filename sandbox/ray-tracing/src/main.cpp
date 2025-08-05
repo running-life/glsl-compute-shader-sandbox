@@ -138,15 +138,21 @@ int main() {
 
             ImGui::Separator();
 
+            static bool useSpatialHash = RENDERER->getUseSpatialHash();
+            if (ImGui::Checkbox("Use Spatial Hash", &useSpatialHash)) {
+                RENDERER->setUseSpatialHash(useSpatialHash);
+            }
+
+            static bool useBVH = RENDERER->getUseBVH();
+            if (ImGui::Checkbox("Use BVH", &useBVH)) {
+                RENDERER->setUseBVH(useBVH);
+            }
+
             static glm::vec3 background_color = RENDERER->getBackgroundColor();
             if (ImGui::ColorPicker3("Background Color", glm::value_ptr(background_color))) {
                 RENDERER->setBackgroundColor(background_color);
             }
 
-            static bool useAccelerationStructure = RENDERER->getUseAccelerationStructure();
-            if (ImGui::Checkbox("Use Acceleration Structure", &useAccelerationStructure)) {
-                RENDERER->setUseAccelerationStructure(useAccelerationStructure);
-            }
         }
         ImGui::End();
 

@@ -14,7 +14,8 @@ uniform vec3 backgroundColor;
 uniform vec3 aabbMin;
 uniform vec3 aabbMax;
 
-uniform bool useAccelerationStructure;
+uniform bool useSpatialHash;
+uniform bool useBVH;
 uniform float cellSize;
 const uint HASH_TABLE_SIZE = 4096 * 16;
 const float stepSize = 50;
@@ -126,7 +127,7 @@ void main() {
             vec3 samplePoint = cameraPosition + t * rayDirection;
             int sphereCount = 0;
             
-            if (useAccelerationStructure) {
+            if (useSpatialHash) {
                 // Calculate grid cell
                 ivec3 cell = ivec3(floor((samplePoint - aabbMin) / cellSize));
                 
