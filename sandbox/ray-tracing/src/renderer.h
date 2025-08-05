@@ -82,6 +82,16 @@ class Renderer {
   FragmentShader fragmentShader;
   Pipeline renderPipeline;
 
+  // Spatial hash parameters
+  static constexpr int HASH_TABLE_SIZE = 4096;  // Should be power of 2
+  static constexpr float CELL_SIZE = 100.0f;    // Size of each grid cell
+  bool useAccelerationStructure = true;         // Toggle acceleration
+  GLuint hashTableBuffer = 0;                   // OpenGL buffer for hash table
+
+  // Compute shader for building the hash table
+  ComputeShader hashBuildShader;
+  Pipeline hashBuildPipeline;
+
  public:
   Renderer()
       : resolution{512, 512},
@@ -93,22 +103,28 @@ class Renderer {
         secondaryTexture{glm::vec2(512, 512), GL_RGBA32F, GL_RGBA, GL_FLOAT},
         finalTexture{glm::vec2(512, 512), GL_RGBA32F, GL_RGBA, GL_FLOAT},
         rayTracingShader(std::filesystem::path(CMAKE_CURRENT_SOURCE_DIR) /
-                         "shaders" / "multi-sphere.comp"),
+                         "shaders" / "multi-sphere-ray-marching.comp"),
         postProcessShader(std::filesystem::path(CMAKE_CURRENT_SOURCE_DIR) /
                           "shaders" / "post-process.comp"),
         vertexShader(std::filesystem::path(CMAKE_CURRENT_SOURCE_DIR) /
                      "shaders" / "render.vert"),
         fragmentShader(std::filesystem::path(CMAKE_CURRENT_SOURCE_DIR) /
-                       "shaders" / "render.frag") {
+                       "shaders" / "render.frag"), 
+        hashBuildShader(std::filesystem::path(CMAKE_CURRENT_SOURCE_DIR) /
+                         "shaders" / "build-spatial-hash.comp") {
     // Setup pipelines
     rayTracingPipeline.attachComputeShader(rayTracingShader);
     postProcessPipeline.attachComputeShader(postProcessShader);
     renderPipeline.attachVertexShader(vertexShader);
     renderPipeline.attachFragmentShader(fragmentShader);
+    hashBuildPipeline.attachComputeShader(hashBuildShader);
 
     // create spheres
     generateCloudSpheres();
     createSphereBuffer();
+
+    // create hash table buffer
+    createHashTableBuffer();
   }
 
   ~Renderer() {
@@ -116,6 +132,11 @@ class Renderer {
     if (sphereBuffer != 0) {
       glDeleteBuffers(1, &sphereBuffer);
       sphereBuffer = 0;
+    }
+    // Existing cleanup...
+    if (hashTableBuffer != 0) {
+      glDeleteBuffers(1, &hashTableBuffer);
+      hashTableBuffer = 0;
     }
   }
 
@@ -158,8 +179,13 @@ class Renderer {
     // // Pass 3: Final display
     // renderPass3_Display();
 
+    if (useAccelerationStructure) {
+      // Build spatial hash table
+      buildSpatialHash();
+    }
+
     // ray marching multiple spheres
-    renderPassRayMarching();
+    renderPassRayMarching2();
     // Pass 2: Post-processing
     renderPass2_PostProcess();
     // Pass 3: Final display
@@ -222,6 +248,66 @@ private:
     // Memory barrier to ensure pass 1 is complete before pass 2
     glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
   }
+
+  void renderPassRayMarching2() {
+    // Bind output texture
+    primaryTexture.bindToImageUnit(0, GL_WRITE_ONLY);
+    
+    // Bind sphere buffer
+    if (sphereBuffer != 0) {
+      glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, sphereBuffer);
+    }
+
+    // Bind hash table if using acceleration
+    if (useAccelerationStructure) {
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, hashTableBuffer);
+    }
+
+    // Pass acceleration toggle to shader
+    rayTracingShader.setUniform("useAccelerationStructure", useAccelerationStructure);
+    rayTracingShader.setUniform("cellSize", CELL_SIZE);
+    
+    // Set uniforms - add AABB data
+    rayTracingShader.setUniform("cameraPosition", camera.camPos);
+    rayTracingShader.setUniform("cameraFront", camera.camForward);
+    rayTracingShader.setUniform("cameraUp", camera.camUp);
+    rayTracingShader.setUniform("cameraRight", camera.camRight);
+    rayTracingShader.setUniform("backgroundColor", backgroundColor);
+    rayTracingShader.setUniform("aabbMin", aabbMin);
+    rayTracingShader.setUniform("aabbMax", aabbMax);
+    
+    rayTracingPipeline.activate();
+    glDispatchCompute(std::ceil(resolution.x / 8.0f),
+                    std::ceil(resolution.y / 8.0f), 1);
+    rayTracingPipeline.deactivate();
+
+    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+  }
+
+  void buildSpatialHash() {
+    // Clear hash table
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, hashTableBuffer);
+    std::vector<uint64_t> emptyTable(HASH_TABLE_SIZE, 0);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, emptyTable.size() * sizeof(uint64_t), 
+                 emptyTable.data(), GL_DYNAMIC_DRAW);
+    
+    // Bind input spheres and output hash table
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, sphereBuffer);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, hashTableBuffer);
+    
+    // Set uniforms
+    hashBuildShader.setUniform("cellSize", CELL_SIZE);
+    hashBuildShader.setUniform("aabbMin", aabbMin);
+    hashBuildShader.setUniform("aabbMax", aabbMax);
+    
+    // Dispatch shader - one thread per sphere
+    hashBuildPipeline.activate();
+    glDispatchCompute(std::ceil(MAX_SPHERES / 64.0f), 1, 1);
+    hashBuildPipeline.deactivate();
+    
+    // Memory barrier
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+}
 
   void renderPass2_PostProcess() {
     // Bind input texture from pass 1
@@ -338,6 +424,8 @@ private:
       return;
     }
 
+    calculateAABB();
+
     // create sphere data packed
     std::vector<SphereDataPacked> packedSpheres;
     packedSpheres.reserve(spheres.size());
@@ -406,6 +494,20 @@ private:
   }
 }
 
+  void createHashTableBuffer() {
+  glGenBuffers(1, &hashTableBuffer);
+  
+  // Initialize hash table with zeros
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, hashTableBuffer);
+  
+  // Each entry is a 64-bit mask (uint64_t or uvec2 in GLSL)
+  std::vector<uint64_t> emptyTable(HASH_TABLE_SIZE, 0);
+  glBufferData(GL_SHADER_STORAGE_BUFFER, emptyTable.size() * sizeof(uint64_t), 
+               emptyTable.data(), GL_DYNAMIC_DRAW);
+  
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+}
+
 private:
   bool debugShowPass1 = false;
   glm::vec3 aabbMin;
@@ -413,6 +515,13 @@ private:
 
 public:
   void setDebugShowPass1(bool show) { debugShowPass1 = show; }
+  void setUseAccelerationStructure(bool use) {
+        useAccelerationStructure = use;
+  }
+
+  bool getUseAccelerationStructure() const {
+        return useAccelerationStructure;
+  }
 
 public:
 };

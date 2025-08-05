@@ -188,6 +188,12 @@ int main()
         RENDERER->setDebugShowPass1(debugShowPass1);
       }
 
+      static bool useAccelerationStructure = RENDERER->getUseAccelerationStructure();
+      if (ImGui::Checkbox("Use Acceleration Structure", &useAccelerationStructure))
+      {
+        RENDERER->setUseAccelerationStructure(useAccelerationStructure);
+      }
+
     }
     ImGui::End();
 

@@ -1,0 +1,100 @@
+#version 460 core
+layout(local_size_x = 64) in;  // Process one sphere per work item
+
+// Hash table parameters
+uniform float cellSize;
+uniform vec3 aabbMin;
+uniform vec3 aabbMax;
+const uint HASH_TABLE_SIZE = 4096;  // Must match CPU side
+
+struct Sphere {
+    vec4 centerAndRadius;  // xyz = center, w = radius
+    vec4 color;            // rgb = color, a = padding
+};
+
+// Input spheres
+layout(std430, binding = 1) readonly buffer SphereBuffer {
+    int numSpheres;
+    Sphere spheres[];
+};
+
+// Output hash table (64-bit bitmasks stored as uvec2)
+layout(std430, binding = 2) buffer HashTableBuffer {
+    // Using uvec2 for 64-bit integers (low 32 bits, high 32 bits)
+    uvec2 hashTable[];
+};
+
+// Hash function for 3D grid cell to 1D hash table index
+uint hash(ivec3 cell) {
+    // Jenkins hash function - simple but effective
+    uint hash = 0;
+    hash += cell.x;
+    hash += hash << 10;
+    hash ^= hash >> 6;
+    
+    hash += cell.y;
+    hash += hash << 10;
+    hash ^= hash >> 6;
+    
+    hash += cell.z;
+    hash += hash << 10;
+    hash ^= hash >> 6;
+    
+    hash += hash << 3;
+    hash ^= hash >> 11;
+    hash += hash << 15;
+    
+    return hash % HASH_TABLE_SIZE;
+}
+
+// Atomically set a bit in the 64-bit hash table entry
+void setBit(uint hashIndex, uint bitPosition) {
+    // Determine which 32-bit word (low or high)
+    uint wordIndex = bitPosition >= 32 ? 1 : 0;
+    uint bitInWord = bitPosition % 32;
+    uint mask = 1u << bitInWord;
+    
+    // Atomic OR to set the bit
+    atomicOr(hashTable[hashIndex][wordIndex], mask);
+}
+
+void main() {
+    uint sphereIndex = gl_GlobalInvocationID.x;
+    
+    // Only process valid spheres
+    if (sphereIndex >= numSpheres) return;
+    
+    // Get sphere data
+    vec3 center = spheres[sphereIndex].centerAndRadius.xyz;
+    float radius = spheres[sphereIndex].centerAndRadius.w;
+    
+    // Calculate grid cells that the sphere overlaps
+    vec3 minCorner = center - vec3(radius);
+    vec3 maxCorner = center + vec3(radius);
+    
+    // Convert to grid cell coordinates
+    ivec3 minCell = ivec3(floor((minCorner - aabbMin) / cellSize));
+    ivec3 maxCell = ivec3(ceil((maxCorner - aabbMin) / cellSize));
+    
+    // Clamp to valid grid range
+    minCell = max(minCell, ivec3(0));
+    
+    // Iterate through all cells that might overlap with the sphere
+    for (int x = minCell.x; x <= maxCell.x; x++) {
+        for (int y = minCell.y; y <= maxCell.y; y++) {
+            for (int z = minCell.z; z <= maxCell.z; z++) {
+                // Calculate cell center
+                vec3 cellCenter = aabbMin + (vec3(x, y, z) + 0.5) * cellSize;
+                
+                // Test if sphere overlaps this cell (conservative)
+                if (distance(cellCenter, center) <= radius + cellSize * 0.866) {  // 0.866 = sqrt(3)/2
+                    // Hash the cell coordinates to get hash table index
+                    uint hashIndex = hash(ivec3(x, y, z));
+                    
+                    // Set the bit for this sphere in the hash table
+                    setBit(hashIndex, sphereIndex);
+                }
+            }
+        }
+    }
+}
