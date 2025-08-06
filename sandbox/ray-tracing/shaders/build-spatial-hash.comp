@@ -5,7 +5,7 @@ layout(local_size_x = 64) in;  // Process one sphere per work item
 uniform float cellSize;
 uniform vec3 aabbMin;
 uniform vec3 aabbMax;
-const uint HASH_TABLE_SIZE = 4096 * 16;  // Must match CPU side
+const uint HASH_TABLE_SIZE = 4096 * 256;  // Must match CPU side
 
 struct Sphere {
     vec4 centerAndRadius;  // xyz = center, w = radius

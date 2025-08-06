@@ -8,7 +8,6 @@ uniform vec3 cameraPosition;
 uniform vec3 cameraFront;
 uniform vec3 cameraUp;
 uniform vec3 cameraRight;
-uniform vec3 backgroundColor;
 
 // AABB for ray marching
 uniform vec3 aabbMin;
@@ -105,13 +104,6 @@ bool isPointInAABB(vec3 point, vec3 aabbMin, vec3 aabbMax) {
     return all(greaterThanEqual(point, aabbMin)) && all(lessThanEqual(point, aabbMax));
 }
 
-// Cost function
-float computeCostFunction(vec3 sphereCenter, float sphereRadius) {
-    float tempa = sin(sphereCenter.x) / max(sphereRadius, 1);
-    float tempb = cos(sphereCenter.y) / max(sphereRadius, 1);
-    float tempc = sin(sphereCenter.z) / max(sphereRadius, 1);
-    return tempa * tempb * tempc;
-}
 
 // BVH-accelerated sphere count at a point
 int countSpheresAtPointBVH(vec3 samplePoint) {
@@ -149,11 +141,9 @@ int countSpheresAtPointBVH(vec3 samplePoint) {
                 
                 vec3 sphereCenter = spheres[sphereIdx].centerAndRadius.xyz;
                 float sphereRadius = spheres[sphereIdx].centerAndRadius.w;
-                
+                             
                 if (distance(samplePoint, sphereCenter) <= sphereRadius) {
                     sphereCount++;
-                    // Apply cost function
-                    computeCostFunction(sphereCenter, sphereRadius);
                 }
             }
         } else {
@@ -171,7 +161,7 @@ int countSpheresAtPointBVH(vec3 samplePoint) {
     return sphereCount;
 }
 
-// Spatial hash accelerated sphere count (unchanged)
+// Spatial hash accelerated sphere count
 int countSpheresAtPointSpatialHash(vec3 samplePoint) {
     int sphereCount = 0;
     
@@ -187,9 +177,7 @@ int countSpheresAtPointSpatialHash(vec3 samplePoint) {
         if (isBitSet(sphereMask, i)) {
             vec3 sphereCenter = spheres[i].centerAndRadius.xyz;
             float sphereRadius = spheres[i].centerAndRadius.w;
-
             if (distance(samplePoint, sphereCenter) <= sphereRadius) {
-                computeCostFunction(sphereCenter, sphereRadius);
                 sphereCount++;
             }
         }
@@ -206,8 +194,8 @@ int countSpheresAtPointBruteForce(vec3 samplePoint) {
         vec3 sphereCenter = spheres[i].centerAndRadius.xyz;
         float sphereRadius = spheres[i].centerAndRadius.w;
 
+        
         if (distance(samplePoint, sphereCenter) <= sphereRadius) {
-            computeCostFunction(sphereCenter, sphereRadius);
             sphereCount++;
         }
     }
@@ -230,18 +218,12 @@ void main() {
         tan(fov * 0.5) * (ndc.x * aspect * cameraRight + ndc.y * cameraUp)
     );
     
-    // Default background color
-    vec3 finalColor = backgroundColor;
-    
     float tMin, tMax;
+    bool hit = false;
     if (rayAABBIntersection(cameraPosition, rayDirection, aabbMin, aabbMax, tMin, tMax)) {
         // Ray marching parameters
         float t = max(tMin, 0.0);  // Start at entry point or camera if inside
-        
-        // Color accumulation
-        float density = 0.0;
-        float maxDensity = 50.0; // For normalization
-        
+      
         while (t < tMax) {
             vec3 samplePoint = cameraPosition + t * rayDirection;
             int sphereCount = 0;
@@ -254,27 +236,20 @@ void main() {
             } else {
                 sphereCount = countSpheresAtPointBruteForce(samplePoint);
             }
-
-            density += float(sphereCount);
+            if (sphereCount > 0) {
+                hit = true;
+            }
             t += stepSize;
-        }
-        
-        // Normalize density and map to color
-        float normalizedDensity = min(density / maxDensity, 1.0);
-        
-        // Simple color gradient based on density
-        if (normalizedDensity > 0.0) {
-            // Cool to warm color map
-            vec3 coolColor = vec3(0.0, 0.0, 0.6);  // Deep blue
-            vec3 warmColor = vec3(1.0, 0.4, 0.0);  // Orange
-            
-            finalColor = mix(coolColor, warmColor, normalizedDensity);
-            
-            // Add brightness based on density
-            float brightness = 0.5 + 0.5 * normalizedDensity;
-            finalColor *= brightness;
         }
     }
     
+    vec3 finalColor;
+    if (hit) {
+        finalColor = vec3(1.0, 0.0, 0.0);
+    }
+    else {
+        finalColor = vec3(0.0, 0.0, 0.0);
+    }
+
     imageStore(image, gidx, vec4(finalColor, 1.0));
 }

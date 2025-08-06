@@ -52,14 +52,17 @@ private:
     Pipeline renderPipeline;
 
     // Spatial hash parameters
-    static constexpr int HASH_TABLE_SIZE = 4096 * 16; // Should be power of 2
-    static constexpr float CELL_SIZE = 10.0f;         // Size of each grid cell
-    bool useSpatialHash = true;                       // Toggle acceleration
-    GLuint hashTableBuffer = 0;                       // OpenGL buffer for hash table
+    static constexpr int HASH_TABLE_SIZE = 4096 * 256; // Should be power of 2
+    static constexpr float CELL_SIZE = 10.0f;          // Size of each grid cell
+    bool useSpatialHash = true;                        // Toggle acceleration
+    GLuint hashTableBuffer = 0;                        // OpenGL buffer for hash table
 
     // Compute shader for building the hash table
     ComputeShader hashBuildShader;
     Pipeline hashBuildPipeline;
+
+    ComputeShader timeConsumeShader;
+    Pipeline timeConsumePipeline;
 
 public:
     Renderer()
@@ -74,13 +77,16 @@ public:
               std::filesystem::path(CMAKE_CURRENT_SOURCE_DIR) / "shaders" / "render.frag"),
           hashBuildShader(
               std::filesystem::path(CMAKE_CURRENT_SOURCE_DIR) / "shaders"
-              / "build-spatial-hash.comp") {
+              / "build-spatial-hash.comp"),
+          timeConsumeShader(
+              std::filesystem::path(CMAKE_CURRENT_SOURCE_DIR) / "shaders" / "time-consume.comp") {
         // Setup pipelines
         rayTracingPipeline.attachComputeShader(rayTracingShader);
         postProcessPipeline.attachComputeShader(postProcessShader);
         renderPipeline.attachVertexShader(vertexShader);
         renderPipeline.attachFragmentShader(fragmentShader);
         hashBuildPipeline.attachComputeShader(hashBuildShader);
+        timeConsumePipeline.attachComputeShader(timeConsumeShader);
 
         // create spheres
         generateCloudSpheres();
@@ -148,6 +154,8 @@ public:
         //     buildBVH();
         // }
 
+        timeConsumePass();
+
         // ray marching multiple spheres
         renderPassRayMarching();
 
@@ -203,6 +211,51 @@ private:
         glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
     }
 
+    void timeConsumePass() {
+        // Bind output texture
+        primaryTexture.bindToImageUnit(0, GL_WRITE_ONLY);
+
+        // Bind sphere buffer
+        if (sphereBuffer != 0) {
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, sphereBuffer);
+        }
+
+        // Bind hash table if using acceleration
+        if (useSpatialHash) {
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, hashTableBuffer);
+        }
+
+        if (useBVH) {
+            if (bvhBuffer != 0 && sphereIndexBuffer != 0 && !bvh.getGPUNodes().empty()) {
+                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, bvhBuffer);
+                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, sphereIndexBuffer);
+            } else {
+                useBVH = false;
+            }
+        }
+
+        // Pass acceleration toggle to shader
+        timeConsumeShader.setUniform("useSpatialHash", useSpatialHash);
+        timeConsumeShader.setUniform("useBVH", useBVH);
+        timeConsumeShader.setUniform("cellSize", CELL_SIZE);
+
+        // Set uniforms - add AABB data
+        timeConsumeShader.setUniform("cameraPosition", camera.camPos);
+        timeConsumeShader.setUniform("cameraFront", camera.camForward);
+        timeConsumeShader.setUniform("cameraUp", camera.camUp);
+        timeConsumeShader.setUniform("cameraRight", camera.camRight);
+        timeConsumeShader.setUniform("aabbMin", aabbMin);
+        timeConsumeShader.setUniform("aabbMax", aabbMax);
+
+        timeConsumePipeline.activate();
+        glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, 2, -1, "time consume");
+        glDispatchCompute(std::ceil(resolution.x / 8.0f), std::ceil(resolution.y / 8.0f), 1);
+        glPopDebugGroup();
+        timeConsumePipeline.deactivate();
+
+        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+    }
+
     void buildSpatialHash() {
         // Clear hash table
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, hashTableBuffer);
@@ -233,7 +286,7 @@ private:
 
     void buildBVH() {
         bvh.build(packedSpheres);
-        // bvh.printStats();
+        bvh.printStats();
 
         const auto& nodes = bvh.getGPUNodes();
         const auto& indices = bvh.getGPUSphereIndices();
