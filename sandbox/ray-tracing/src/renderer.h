@@ -53,7 +53,7 @@ private:
 
     // Spatial hash parameters
     static constexpr int HASH_TABLE_SIZE = 4096 * 256; // Should be power of 2
-    static constexpr float CELL_SIZE = 10.0f;          // Size of each grid cell
+    static constexpr float CELL_SIZE = 20.0f;          // Size of each grid cell
     bool useSpatialHash = true;                        // Toggle acceleration
     GLuint hashTableBuffer = 0;                        // OpenGL buffer for hash table
 
@@ -64,9 +64,14 @@ private:
     ComputeShader timeConsumeShader;
     Pipeline timeConsumePipeline;
 
+    ComputeShader cullStatisticShader;
+    Pipeline cullStatisticPipeline;
+    Texture cullStatisticTexture;
+
 public:
     Renderer()
         : resolution{512, 512}, primaryTexture{glm::vec2(512, 512), GL_RGBA32F, GL_RGBA, GL_FLOAT},
+          cullStatisticTexture{glm::vec2(512, 512), GL_RGBA32F, GL_RGBA, GL_FLOAT},
           rayTracingShader(
               std::filesystem::path(CMAKE_CURRENT_SOURCE_DIR) / "shaders"
               / "ray-marching-bvh.comp"),
@@ -79,7 +84,10 @@ public:
               std::filesystem::path(CMAKE_CURRENT_SOURCE_DIR) / "shaders"
               / "build-spatial-hash.comp"),
           timeConsumeShader(
-              std::filesystem::path(CMAKE_CURRENT_SOURCE_DIR) / "shaders" / "time-consume.comp") {
+              std::filesystem::path(CMAKE_CURRENT_SOURCE_DIR) / "shaders" / "time-consume.comp"),
+          cullStatisticShader(
+              std::filesystem::path(CMAKE_CURRENT_SOURCE_DIR) / "shaders"
+              / "cull-statistics.comp") {
         // Setup pipelines
         rayTracingPipeline.attachComputeShader(rayTracingShader);
         postProcessPipeline.attachComputeShader(postProcessShader);
@@ -87,6 +95,7 @@ public:
         renderPipeline.attachFragmentShader(fragmentShader);
         hashBuildPipeline.attachComputeShader(hashBuildShader);
         timeConsumePipeline.attachComputeShader(timeConsumeShader);
+        cullStatisticPipeline.attachComputeShader(cullStatisticShader);
 
         // create spheres
         generateCloudSpheres();
@@ -126,6 +135,7 @@ public:
     void setResolution(const glm::uvec2& resolutionArg) {
         this->resolution = resolutionArg;
         primaryTexture.resize(resolutionArg);
+        cullStatisticTexture.resize(resolutionArg);
     }
 
     void setBackgroundColor(const glm::vec3& color) {
@@ -153,6 +163,8 @@ public:
         // if (useBVH) {
         //     buildBVH();
         // }
+
+        cullStatisticsPass();
 
         timeConsumePass();
 
@@ -252,6 +264,44 @@ private:
         glDispatchCompute(std::ceil(resolution.x / 8.0f), std::ceil(resolution.y / 8.0f), 1);
         glPopDebugGroup();
         timeConsumePipeline.deactivate();
+
+        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+    }
+
+    void cullStatisticsPass() {
+
+        if (!useSpatialHash) {
+            return;
+        }
+
+        // Bind output texture
+        cullStatisticTexture.bindToImageUnit(0, GL_WRITE_ONLY);
+
+        // Bind sphere buffer
+        if (sphereBuffer != 0) {
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, sphereBuffer);
+        }
+
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, hashTableBuffer);
+
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, bvhBuffer);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, sphereIndexBuffer);
+
+        cullStatisticShader.setUniform("cellSize", CELL_SIZE);
+
+        // Set uniforms - add AABB data
+        cullStatisticShader.setUniform("cameraPosition", camera.camPos);
+        cullStatisticShader.setUniform("cameraFront", camera.camForward);
+        cullStatisticShader.setUniform("cameraUp", camera.camUp);
+        cullStatisticShader.setUniform("cameraRight", camera.camRight);
+        cullStatisticShader.setUniform("aabbMin", aabbMin);
+        cullStatisticShader.setUniform("aabbMax", aabbMax);
+
+        cullStatisticPipeline.activate();
+        glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, 2, -1, "cull statistics");
+        glDispatchCompute(std::ceil(resolution.x / 8.0f), std::ceil(resolution.y / 8.0f), 1);
+        glPopDebugGroup();
+        cullStatisticPipeline.deactivate();
 
         glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
     }
