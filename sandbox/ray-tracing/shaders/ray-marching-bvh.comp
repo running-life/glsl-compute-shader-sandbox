@@ -240,7 +240,7 @@ void main() {
         
         // Color accumulation
         float density = 0.0;
-        float maxDensity = 50.0; // For normalization
+        float maxDensity = 70.0; // For normalization
         
         while (t < tMax) {
             vec3 samplePoint = cameraPosition + t * rayDirection;

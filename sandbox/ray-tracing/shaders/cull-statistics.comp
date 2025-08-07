@@ -120,6 +120,8 @@ int countSpheresAtPointBVH(vec3 samplePoint) {
         if (nodeIndex < 0 || nodeIndex >= nodeCount) continue;
         
         BVHNode node = nodes[nodeIndex];
+
+        sphereCount++;
         
         // Check if point is inside node's AABB
         if (!isPointInAABB(samplePoint, node.aabbMin.xyz, node.aabbMax.xyz)) {
@@ -158,7 +160,7 @@ int countSpheresAtPointBVH(vec3 samplePoint) {
 
 // Spatial hash accelerated sphere count
 int countSpheresAtPointSpatialHash(vec3 samplePoint) {
-    int sphereCount = 0;
+    int sphereCount = 20;
     
     // Calculate grid cell
     ivec3 cell = ivec3(floor((samplePoint - aabbMin) / cellSize));
@@ -211,8 +213,8 @@ void main() {
     
     float tMin, tMax;
     float sphereCountBruteForce = 0.01;
-    float sphereCountSpatialHash = 0.01;
-    float sphereCountBVH = 0.01;
+    float sphereCountSpatialHash = 0.0;
+    float sphereCountBVH = 0.0;
     // in this compute shader, sphere count equals to sdf calcution times
     if (rayAABBIntersection(cameraPosition, rayDirection, aabbMin, aabbMax, tMin, tMax)) {
         // Ray marching parameters
@@ -223,15 +225,15 @@ void main() {
             int sphereCount = 0;
             
             // Choose acceleration method
-            sphereCountBVH = countSpheresAtPointBVH(samplePoint);
-            sphereCountSpatialHash = countSpheresAtPointSpatialHash(samplePoint);
-            sphereCountBruteForce = countSpheresAtPointBruteForce(samplePoint);
+            sphereCountBVH += countSpheresAtPointBVH(samplePoint);
+            sphereCountSpatialHash += countSpheresAtPointSpatialHash(samplePoint);
+            sphereCountBruteForce += countSpheresAtPointBruteForce(samplePoint);
 
             t += stepSize;
         }
     }
     
-    float temp = 10 / sphereCountBruteForce;
-    vec3 finalColor = vec3(sphereCountSpatialHash * temp, sphereCountBVH * temp, 1.0);
+    float temp = 1 / sphereCountBruteForce;
+    vec3 finalColor = vec3(sphereCountSpatialHash * temp, sphereCountBVH * temp, sphereCountBruteForce);
     imageStore(image, gidx, vec4(finalColor, 1.0));
 }

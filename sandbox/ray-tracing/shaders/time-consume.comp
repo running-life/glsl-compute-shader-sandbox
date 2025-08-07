@@ -20,7 +20,7 @@ uniform float cellSize;
 
 // Ray marching parameters
 const uint HASH_TABLE_SIZE = 4096 * 256;
-const float stepSize = 10;
+const float stepSize = 20;
 
 // BVH node structure
 struct BVHNode {
