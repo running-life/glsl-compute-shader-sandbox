@@ -145,7 +145,7 @@ private:
         const SplitInfo& split);
 
     // convert a single node to GPU format
-    size_t convertNodeToGPU(const BVHNodeCPU* node, std::vector<BVHNodeGPU>& gpuNodes);
+    size_t convertNodeToGPU(const BVHNodeCPU* node);
 };
 
 #endif // BVH_H

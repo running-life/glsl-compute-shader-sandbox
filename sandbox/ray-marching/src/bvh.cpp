@@ -190,7 +190,7 @@ void BVH::convertToGPUFormat() {
     gpuNodes.reserve(estimatedNodeCount);
     gpuSphereIndices.reserve(estimatedNodeCount * 2);
 
-    convertNodeToGPU(root.get(), gpuNodes);
+    convertNodeToGPU(root.get());
     gpuNodes.shrink_to_fit();
     gpuSphereIndices.shrink_to_fit();
 }
@@ -223,7 +223,7 @@ void BVH::convertToGPUFormat() {
 //     return nodeIndex;
 // }
 
-size_t BVH::convertNodeToGPU(const BVHNodeCPU* node, std::vector<BVHNodeGPU>& gpuNodes) {
+size_t BVH::convertNodeToGPU(const BVHNodeCPU* node) {
     size_t nodeIndex = gpuNodes.size();
     gpuNodes.emplace_back();
 
@@ -239,8 +239,8 @@ size_t BVH::convertNodeToGPU(const BVHNodeCPU* node, std::vector<BVHNodeGPU>& gp
             gpuSphereIndices.push_back(sphereIdx);
         }
     } else {
-        size_t leftChild = convertNodeToGPU(node->leftChild.get(), gpuNodes);
-        size_t rightChild = convertNodeToGPU(node->rightChild.get(), gpuNodes);
+        size_t leftChild = convertNodeToGPU(node->leftChild.get());
+        size_t rightChild = convertNodeToGPU(node->rightChild.get());
 
         gpuNodes[nodeIndex].aabbMin.w = static_cast<float>(leftChild);
         gpuNodes[nodeIndex].aabbMax.w = static_cast<float>(rightChild);

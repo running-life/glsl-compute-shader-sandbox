@@ -28,7 +28,7 @@ private:
     GLuint sphereBuffer = 0;
     static constexpr int MAX_SPHERES = 64;
 
-    float stepSize = 20.0f;
+    float stepSize = 5.0f;
 
     // BVH
     BVH bvh;
@@ -55,6 +55,7 @@ private:
     ComputeShader hashBuildShader;
     Pipeline hashBuildPipeline;
 
+    // deprecated
     ComputeShader timeConsumeShader;
     Pipeline timeConsumePipeline;
 
