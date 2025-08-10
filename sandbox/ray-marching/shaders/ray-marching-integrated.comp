@@ -14,7 +14,14 @@ uniform vec3 backgroundColor;
 uniform vec3 aabbMin;
 uniform vec3 aabbMax;
 
-uniform float stepSize;
+// Acceleration structure control
+uniform bool useBVH;
+uniform bool useSpatialHash;
+uniform float cellSize;
+
+// Ray marching parameters
+const uint HASH_TABLE_SIZE = 4096 * 256;
+const float stepSize = 10;
 
 // BVH node structure
 struct BVHNode {
@@ -29,20 +36,54 @@ struct Sphere {
 };
 
 // Buffers
-layout(std140, binding = 1) uniform SphereBuffer {
+layout(std430, binding = 1) readonly buffer SphereBuffer {
     int numSpheres;
-    Sphere spheres[64];
+    Sphere spheres[];
+};
+
+// Spatial hash table (existing)
+layout(std430, binding = 2) readonly buffer HashTableBuffer {
+    uvec2 hashTable[];
 };
 
 // BVH buffers
-layout(std140, binding = 2) uniform BVHBuffer {
+layout(std430, binding = 3) readonly buffer BVHBuffer {
     int nodeCount;
-    BVHNode nodes[100];
+    BVHNode nodes[];
 };
 
-layout(std140, binding = 3) uniform SphereIndexBuffer {
-    uint sphereIndices[64];
+layout(std430, binding = 4) readonly buffer SphereIndexBuffer {
+    uint sphereIndices[];
 };
+
+// Hash function for spatial hash (unchanged)
+uint hash(ivec3 cell) {
+    uint hash = 0;
+    hash += cell.x;
+    hash += hash << 10;
+    hash ^= hash >> 6;
+    
+    hash += cell.y;
+    hash += hash << 10;
+    hash ^= hash >> 6;
+    
+    hash += cell.z;
+    hash += hash << 10;
+    hash ^= hash >> 6;
+    
+    hash += hash << 3;
+    hash ^= hash >> 11;
+    hash += hash << 15;
+    
+    return hash % HASH_TABLE_SIZE;
+}
+
+// Check if a bit is set in the 64-bit hash table entry
+bool isBitSet(uvec2 mask, uint bit) {
+    uint wordIndex = bit >= 32 ? 1 : 0;
+    uint bitInWord = bit % 32;
+    return (mask[wordIndex] & (1u << bitInWord)) != 0u;
+}
 
 // Ray-AABB intersection function
 bool rayAABBIntersection(vec3 rayOrigin, vec3 rayDir, vec3 boxMin, vec3 boxMax, out float tMin, out float tMax) {
@@ -62,6 +103,14 @@ bool rayAABBIntersection(vec3 rayOrigin, vec3 rayDir, vec3 boxMin, vec3 boxMax, 
 // Point-in-AABB test
 bool isPointInAABB(vec3 point, vec3 aabbMin, vec3 aabbMax) {
     return all(greaterThanEqual(point, aabbMin)) && all(lessThanEqual(point, aabbMax));
+}
+
+// Cost function
+float computeCostFunction(vec3 sphereCenter, float sphereRadius) {
+    float tempa = sin(sphereCenter.x) / max(sphereRadius, 1);
+    float tempb = cos(sphereCenter.y) / max(sphereRadius, 1);
+    float tempc = sin(sphereCenter.z) / max(sphereRadius, 1);
+    return tempa * tempb * tempc;
 }
 
 // BVH-accelerated sphere count at a point
@@ -103,6 +152,8 @@ int countSpheresAtPointBVH(vec3 samplePoint) {
                 
                 if (distance(samplePoint, sphereCenter) <= sphereRadius) {
                     sphereCount++;
+                    // Apply cost function
+                    computeCostFunction(sphereCenter, sphereRadius);
                 }
             }
         } else {
@@ -114,6 +165,50 @@ int countSpheresAtPointBVH(vec3 samplePoint) {
                 if (leftChild < nodeCount) stack[stackPtr++] = leftChild;
                 if (rightChild < nodeCount) stack[stackPtr++] = rightChild;
             }
+        }
+    }
+    
+    return sphereCount;
+}
+
+// Spatial hash accelerated sphere count (unchanged)
+int countSpheresAtPointSpatialHash(vec3 samplePoint) {
+    int sphereCount = 0;
+    
+    // Calculate grid cell
+    ivec3 cell = ivec3(floor((samplePoint - aabbMin) / cellSize));
+    
+    // Get hash table entry
+    uint hashIndex = hash(cell);
+    uvec2 sphereMask = hashTable[hashIndex];
+    
+    // Only check spheres that are in this cell
+    for (int i = 0; i < numSpheres; i++) {
+        if (isBitSet(sphereMask, i)) {
+            vec3 sphereCenter = spheres[i].centerAndRadius.xyz;
+            float sphereRadius = spheres[i].centerAndRadius.w;
+
+            if (distance(samplePoint, sphereCenter) <= sphereRadius) {
+                computeCostFunction(sphereCenter, sphereRadius);
+                sphereCount++;
+            }
+        }
+    }
+    
+    return sphereCount;
+}
+
+// Brute force sphere count (unchanged)
+int countSpheresAtPointBruteForce(vec3 samplePoint) {
+    int sphereCount = 0;
+    
+    for (int i = 0; i < numSpheres; i++) {
+        vec3 sphereCenter = spheres[i].centerAndRadius.xyz;
+        float sphereRadius = spheres[i].centerAndRadius.w;
+
+        if (distance(samplePoint, sphereCenter) <= sphereRadius) {
+            computeCostFunction(sphereCenter, sphereRadius);
+            sphereCount++;
         }
     }
     
@@ -149,8 +244,17 @@ void main() {
         
         while (t < tMax) {
             vec3 samplePoint = cameraPosition + t * rayDirection;
-            int sphereCount = countSpheresAtPointBVH(samplePoint);
+            int sphereCount = 0;
             
+            // Choose acceleration method
+            if (useBVH) {
+                sphereCount = countSpheresAtPointBVH(samplePoint);
+            } else if (useSpatialHash) {
+                sphereCount = countSpheresAtPointSpatialHash(samplePoint);
+            } else {
+                sphereCount = countSpheresAtPointBruteForce(samplePoint);
+            }
+
             density += float(sphereCount);
             t += stepSize;
         }

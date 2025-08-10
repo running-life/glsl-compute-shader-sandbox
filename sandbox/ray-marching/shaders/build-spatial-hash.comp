@@ -13,9 +13,9 @@ struct Sphere {
 };
 
 // Input spheres
-layout(std430, binding = 1) readonly buffer SphereBuffer {
+layout(std140, binding = 1) uniform SphereBuffer {
     int numSpheres;
-    Sphere spheres[];
+    Sphere spheres[64];
 };
 
 // Output hash table (64-bit bitmasks stored as uvec2)

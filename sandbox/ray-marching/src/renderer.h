@@ -28,6 +28,8 @@ private:
     GLuint sphereBuffer = 0;
     static constexpr int MAX_SPHERES = 64;
 
+    float stepSize = 20.0f;
+
     // BVH
     BVH bvh;
     GLuint bvhBuffer = 0;
@@ -36,14 +38,6 @@ private:
 
     // Multi-pass rendering textures
     Texture primaryTexture; // First pass output
-
-    // Pass: Primary ray tracing
-    ComputeShader rayTracingShader;
-    Pipeline rayTracingPipeline;
-
-    // Pass: Post-processing (denoising, tone mapping, etc.)
-    ComputeShader postProcessShader;
-    Pipeline postProcessPipeline;
 
     // Pass: Final display
     Quad quad;
@@ -54,7 +48,7 @@ private:
     // Spatial hash parameters
     static constexpr int HASH_TABLE_SIZE = 4096 * 256; // Should be power of 2
     static constexpr float CELL_SIZE = 20.0f;          // Size of each grid cell
-    bool useSpatialHash = true;                        // Toggle acceleration
+    bool useSpatialHash = false;                       // Toggle acceleration
     GLuint hashTableBuffer = 0;                        // OpenGL buffer for hash table
 
     // Compute shader for building the hash table
@@ -68,15 +62,19 @@ private:
     Pipeline cullStatisticPipeline;
     Texture cullStatisticTexture;
 
+    ComputeShader rayMarchingBVHShader;
+    Pipeline rayMarchingBVHPipeline;
+
+    ComputeShader rayMarchingHashShader;
+    Pipeline rayMarchingHashPipeline;
+
+    ComputeShader rayMarchingBruteForceShader;
+    Pipeline rayMarchingBruteForcePipeline;
+
 public:
     Renderer()
         : resolution{512, 512}, primaryTexture{glm::vec2(512, 512), GL_RGBA32F, GL_RGBA, GL_FLOAT},
           cullStatisticTexture{glm::vec2(512, 512), GL_RGBA32F, GL_RGBA, GL_FLOAT},
-          rayTracingShader(
-              std::filesystem::path(CMAKE_CURRENT_SOURCE_DIR) / "shaders"
-              / "ray-marching-bvh.comp"),
-          postProcessShader(
-              std::filesystem::path(CMAKE_CURRENT_SOURCE_DIR) / "shaders" / "post-process.comp"),
           vertexShader(std::filesystem::path(CMAKE_CURRENT_SOURCE_DIR) / "shaders" / "render.vert"),
           fragmentShader(
               std::filesystem::path(CMAKE_CURRENT_SOURCE_DIR) / "shaders" / "render.frag"),
@@ -86,16 +84,26 @@ public:
           timeConsumeShader(
               std::filesystem::path(CMAKE_CURRENT_SOURCE_DIR) / "shaders" / "time-consume.comp"),
           cullStatisticShader(
+              std::filesystem::path(CMAKE_CURRENT_SOURCE_DIR) / "shaders" / "cull-statistics.comp"),
+          rayMarchingBVHShader(
               std::filesystem::path(CMAKE_CURRENT_SOURCE_DIR) / "shaders"
-              / "cull-statistics.comp") {
+              / "ray-marching-bvh.comp"),
+          rayMarchingHashShader(
+              std::filesystem::path(CMAKE_CURRENT_SOURCE_DIR) / "shaders"
+              / "ray-marching-hash.comp"),
+          rayMarchingBruteForceShader(
+              std::filesystem::path(CMAKE_CURRENT_SOURCE_DIR) / "shaders"
+              / "ray-marching-brute-force.comp") {
         // Setup pipelines
-        rayTracingPipeline.attachComputeShader(rayTracingShader);
-        postProcessPipeline.attachComputeShader(postProcessShader);
         renderPipeline.attachVertexShader(vertexShader);
         renderPipeline.attachFragmentShader(fragmentShader);
         hashBuildPipeline.attachComputeShader(hashBuildShader);
         timeConsumePipeline.attachComputeShader(timeConsumeShader);
         cullStatisticPipeline.attachComputeShader(cullStatisticShader);
+
+        rayMarchingBVHPipeline.attachComputeShader(rayMarchingBVHShader);
+        rayMarchingHashPipeline.attachComputeShader(rayMarchingHashShader);
+        rayMarchingBruteForcePipeline.attachComputeShader(rayMarchingBruteForceShader);
 
         // create spheres
         generateCloudSpheres();
@@ -155,70 +163,106 @@ public:
     }
 
     void render() {
-        if (useSpatialHash) {
-            // Build spatial hash table
+        if (useBVH) {
+            rayMarchingBVH();
+        } else if (useSpatialHash) {
             buildSpatialHash();
+            rayMarchingHash();
+        } else {
+            rayMarchingBruteForce();
         }
-
-        // if (useBVH) {
-        //     buildBVH();
-        // }
-
-        cullStatisticsPass();
-
-        timeConsumePass();
-
-        // ray marching multiple spheres
-        renderPassRayMarching();
-
         // Final display
         renderPassDisplay();
     }
 
 private:
-    // render multiple spheres with ray marching
-    void renderPassRayMarching() {
-        // Bind output texture
+    void rayMarchingBVH() {
         primaryTexture.bindToImageUnit(0, GL_WRITE_ONLY);
 
-        // Bind sphere buffer
         if (sphereBuffer != 0) {
-            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, sphereBuffer);
+            glBindBufferBase(GL_UNIFORM_BUFFER, 1, sphereBuffer);
         }
 
-        // Bind hash table if using acceleration
-        if (useSpatialHash) {
+        if (bvhBuffer != 0 && sphereIndexBuffer != 0 && !bvh.getGPUNodes().empty()) {
+            glBindBufferBase(GL_UNIFORM_BUFFER, 2, bvhBuffer);
+            glBindBufferBase(GL_UNIFORM_BUFFER, 3, sphereIndexBuffer);
+        }
+
+        rayMarchingBVHShader.setUniform("cameraPosition", camera.camPos);
+        rayMarchingBVHShader.setUniform("cameraFront", camera.camForward);
+        rayMarchingBVHShader.setUniform("cameraUp", camera.camUp);
+        rayMarchingBVHShader.setUniform("cameraRight", camera.camRight);
+        rayMarchingBVHShader.setUniform("backgroundColor", backgroundColor);
+        rayMarchingBVHShader.setUniform("aabbMin", aabbMin);
+        rayMarchingBVHShader.setUniform("aabbMax", aabbMax);
+
+        rayMarchingBVHShader.setUniform("stepSize", stepSize);
+
+        rayMarchingBVHPipeline.activate();
+        glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, 2, -1, "Ray Marching BVH");
+        glDispatchCompute(
+            (GLuint)std::ceil(resolution.x / 8.0f), (GLuint)std::ceil(resolution.y / 8.0f), 1);
+        glPopDebugGroup();
+        rayMarchingBVHPipeline.deactivate();
+
+        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+    }
+
+    void rayMarchingBruteForce() {
+        primaryTexture.bindToImageUnit(0, GL_WRITE_ONLY);
+
+        if (sphereBuffer != 0) {
+            glBindBufferBase(GL_UNIFORM_BUFFER, 1, sphereBuffer);
+        }
+
+        rayMarchingBruteForceShader.setUniform("cameraPosition", camera.camPos);
+        rayMarchingBruteForceShader.setUniform("cameraFront", camera.camForward);
+        rayMarchingBruteForceShader.setUniform("cameraUp", camera.camUp);
+        rayMarchingBruteForceShader.setUniform("cameraRight", camera.camRight);
+        rayMarchingBruteForceShader.setUniform("backgroundColor", backgroundColor);
+        rayMarchingBruteForceShader.setUniform("aabbMin", aabbMin);
+        rayMarchingBruteForceShader.setUniform("aabbMax", aabbMax);
+
+        rayMarchingBruteForceShader.setUniform("stepSize", stepSize);
+
+        rayMarchingBruteForcePipeline.activate();
+        glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, 2, -1, "Ray Marching Brute Force");
+        glDispatchCompute(
+            (GLuint)std::ceil(resolution.x / 8.0f), (GLuint)std::ceil(resolution.y / 8.0f), 1);
+        glPopDebugGroup();
+        rayMarchingBruteForcePipeline.deactivate();
+
+        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+    }
+
+    void rayMarchingHash() {
+        primaryTexture.bindToImageUnit(0, GL_WRITE_ONLY);
+
+        if (sphereBuffer != 0) {
+            glBindBufferBase(GL_UNIFORM_BUFFER, 1, sphereBuffer);
+        }
+
+        if (hashTableBuffer != 0) {
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, hashTableBuffer);
         }
 
-        if (useBVH) {
-            if (bvhBuffer != 0 && sphereIndexBuffer != 0 && !bvh.getGPUNodes().empty()) {
-                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, bvhBuffer);
-                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, sphereIndexBuffer);
-            } else {
-                useBVH = false;
-            }
-        }
+        rayMarchingHashShader.setUniform("cameraPosition", camera.camPos);
+        rayMarchingHashShader.setUniform("cameraFront", camera.camForward);
+        rayMarchingHashShader.setUniform("cameraUp", camera.camUp);
+        rayMarchingHashShader.setUniform("cameraRight", camera.camRight);
+        rayMarchingHashShader.setUniform("backgroundColor", backgroundColor);
+        rayMarchingHashShader.setUniform("aabbMin", aabbMin);
+        rayMarchingHashShader.setUniform("aabbMax", aabbMax);
 
-        // Pass acceleration toggle to shader
-        rayTracingShader.setUniform("useSpatialHash", useSpatialHash);
-        rayTracingShader.setUniform("useBVH", useBVH);
-        rayTracingShader.setUniform("cellSize", CELL_SIZE);
+        rayMarchingHashShader.setUniform("stepSize", stepSize);
+        rayMarchingHashShader.setUniform("cellSize", CELL_SIZE);
 
-        // Set uniforms - add AABB data
-        rayTracingShader.setUniform("cameraPosition", camera.camPos);
-        rayTracingShader.setUniform("cameraFront", camera.camForward);
-        rayTracingShader.setUniform("cameraUp", camera.camUp);
-        rayTracingShader.setUniform("cameraRight", camera.camRight);
-        rayTracingShader.setUniform("backgroundColor", backgroundColor);
-        rayTracingShader.setUniform("aabbMin", aabbMin);
-        rayTracingShader.setUniform("aabbMax", aabbMax);
-
-        rayTracingPipeline.activate();
-        glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, 2, -1, "mult sphere Ray Marching");
-        glDispatchCompute(std::ceil(resolution.x / 8.0f), std::ceil(resolution.y / 8.0f), 1);
+        rayMarchingHashPipeline.activate();
+        glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, 2, -1, "Ray Marching Hash");
+        glDispatchCompute(
+            (GLuint)std::ceil(resolution.x / 8.0f), (GLuint)std::ceil(resolution.y / 8.0f), 1);
         glPopDebugGroup();
-        rayTracingPipeline.deactivate();
+        rayMarchingHashPipeline.deactivate();
 
         glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
     }
@@ -307,15 +351,14 @@ private:
     }
 
     void buildSpatialHash() {
-        // Clear hash table
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, hashTableBuffer);
+        glBindBuffer(GL_UNIFORM_BUFFER, hashTableBuffer);
         std::vector<uint64_t> emptyTable(HASH_TABLE_SIZE, 0);
         glBufferData(
-            GL_SHADER_STORAGE_BUFFER, emptyTable.size() * sizeof(uint64_t), emptyTable.data(),
+            GL_UNIFORM_BUFFER, emptyTable.size() * sizeof(uint64_t), emptyTable.data(),
             GL_DYNAMIC_DRAW);
 
         // Bind input spheres and output hash table
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, sphereBuffer);
+        glBindBufferBase(GL_UNIFORM_BUFFER, 1, sphereBuffer);
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, hashTableBuffer);
 
         // Set uniforms
@@ -326,7 +369,7 @@ private:
         // Dispatch shader - one thread per sphere
         hashBuildPipeline.activate();
         glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, 1, -1, "Build Spatial Hash");
-        glDispatchCompute(std::ceil(MAX_SPHERES / 64.0f), 1, 1);
+        glDispatchCompute((GLuint)std::ceil(MAX_SPHERES / 64.0f), 1, 1);
         glPopDebugGroup();
         hashBuildPipeline.deactivate();
 
@@ -343,23 +386,29 @@ private:
 
         const GLintptr bvhDataOffset = 16;
 
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, bvhBuffer);
+        glBindBuffer(GL_UNIFORM_BUFFER, bvhBuffer);
         glBufferData(
-            GL_SHADER_STORAGE_BUFFER, 16 + nodes.size() * sizeof(BVHNodeGPU), nullptr,
-            GL_DYNAMIC_DRAW);
+            GL_UNIFORM_BUFFER, 16 + nodes.size() * sizeof(BVHNodeGPU), nullptr, GL_STATIC_DRAW);
 
         int nodeCount = static_cast<int>(nodes.size());
-        glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(int), &nodeCount);
+        glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(int), &nodeCount);
         glBufferSubData(
-            GL_SHADER_STORAGE_BUFFER, bvhDataOffset, nodes.size() * sizeof(BVHNodeGPU),
-            nodes.data());
+            GL_UNIFORM_BUFFER, bvhDataOffset, nodes.size() * sizeof(BVHNodeGPU), nodes.data());
 
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, sphereIndexBuffer);
+        glBindBuffer(GL_UNIFORM_BUFFER, sphereIndexBuffer);
+        std::vector<uint32_t> sphereIndices;
+        sphereIndices.reserve(indices.size() * 4); // 4 uint32_t per sphere index
+        for (auto i : indices) {
+            sphereIndices.push_back(i);
+            sphereIndices.push_back(0);
+            sphereIndices.push_back(0);
+            sphereIndices.push_back(0);
+        }
+
         glBufferData(
-            GL_SHADER_STORAGE_BUFFER, indices.size() * sizeof(uint32_t), indices.data(),
-            GL_DYNAMIC_DRAW);
-
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+            GL_UNIFORM_BUFFER, sphereIndices.size() * sizeof(uint32_t), sphereIndices.data(),
+            GL_STATIC_DRAW);
+        glBindBuffer(GL_UNIFORM_BUFFER, 0);
     }
 
     void renderPassDisplay() {
@@ -449,35 +498,27 @@ private:
         updateSphereBuffer();
     }
 
-    // TODO: discard the struct SphereData and use SphereDataPacked instead
     void updateSphereBuffer() {
+        // uniform buffer object
         if (sphereBuffer == 0) {
             std::cerr << "Sphere buffer not created!" << std::endl;
             return;
         }
-
         calculateAABB();
-
         // Bind the buffer
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, sphereBuffer);
+        glBindBuffer(GL_UNIFORM_BUFFER, sphereBuffer);
         // Create buffer data: first int for count, then sphere array
-
         const GLintptr sphereDataOffset = 16;
         const GLsizeiptr sphereDataSize = spheres.size() * sizeof(SphereDataPacked);
         const GLsizeiptr bufferSize = sphereDataOffset + sphereDataSize;
-
-        glBufferData(GL_SHADER_STORAGE_BUFFER, bufferSize, nullptr, GL_DYNAMIC_DRAW);
-
+        glBufferData(GL_UNIFORM_BUFFER, bufferSize, nullptr, GL_STATIC_DRAW);
         int numSpheres = static_cast<int>(packedSpheres.size());
-
-        glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(int), &numSpheres);
-
+        glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(int), &numSpheres);
         if (!spheres.empty()) {
             glBufferSubData(
-                GL_SHADER_STORAGE_BUFFER, sphereDataOffset, sphereDataSize, packedSpheres.data());
+                GL_UNIFORM_BUFFER, sphereDataOffset, sphereDataSize, packedSpheres.data());
         }
-
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+        glBindBuffer(GL_UNIFORM_BUFFER, 0);
     }
 
     void calculateAABB() {

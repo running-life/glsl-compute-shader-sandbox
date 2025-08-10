@@ -16,13 +16,6 @@ uniform vec3 aabbMax;
 
 uniform float stepSize;
 
-// BVH node structure
-struct BVHNode {
-    vec4 aabbMin;    // xyz = min bounds, w = leftChild index (or -1 if leaf)
-    vec4 aabbMax;    // xyz = max bounds, w = rightChild index (or sphere count if leaf)
-    uvec4 data;      // x = first sphere index (if leaf), y = sphere count (if leaf)
-};
-
 struct Sphere {
     vec4 centerAndRadius;
     vec4 color;
@@ -34,15 +27,6 @@ layout(std140, binding = 1) uniform SphereBuffer {
     Sphere spheres[64];
 };
 
-// BVH buffers
-layout(std140, binding = 2) uniform BVHBuffer {
-    int nodeCount;
-    BVHNode nodes[100];
-};
-
-layout(std140, binding = 3) uniform SphereIndexBuffer {
-    uint sphereIndices[64];
-};
 
 // Ray-AABB intersection function
 bool rayAABBIntersection(vec3 rayOrigin, vec3 rayDir, vec3 boxMin, vec3 boxMax, out float tMin, out float tMax) {
@@ -59,61 +43,17 @@ bool rayAABBIntersection(vec3 rayOrigin, vec3 rayDir, vec3 boxMin, vec3 boxMax, 
     return tMax > tMin && tMax > 0.0;
 }
 
-// Point-in-AABB test
-bool isPointInAABB(vec3 point, vec3 aabbMin, vec3 aabbMax) {
-    return all(greaterThanEqual(point, aabbMin)) && all(lessThanEqual(point, aabbMax));
-}
 
-// BVH-accelerated sphere count at a point
-int countSpheresAtPointBVH(vec3 samplePoint) {
-    const int MAX_STACK_SIZE = 32;
-    int stack[MAX_STACK_SIZE];
-    int stackPtr = 0;
+// Brute force sphere count (unchanged)
+int countSpheresAtPointBruteForce(vec3 samplePoint) {
     int sphereCount = 0;
     
-    if (nodeCount == 0) return 0;
-    
-    // Start with root node
-    stack[stackPtr++] = 0;
-    
-    while (stackPtr > 0) {
-        int nodeIndex = stack[--stackPtr];
-        
-        if (nodeIndex < 0 || nodeIndex >= nodeCount) continue;
-        
-        BVHNode node = nodes[nodeIndex];
-        
-        // Check if point is inside node's AABB
-        if (!isPointInAABB(samplePoint, node.aabbMin.xyz, node.aabbMax.xyz)) {
-            continue;
-        }
-        
-        // Check if it's a leaf node
-        if (node.aabbMin.w == -1) {
-            // Leaf node - check spheres
-            uint firstSphereIndex = node.data.x;
-            uint numSpheresInLeaf = uint(node.aabbMax.w);
-            
-            for (uint i = 0; i < numSpheresInLeaf; i++) {
-                uint sphereIdx = sphereIndices[firstSphereIndex + i];
-                if (sphereIdx >= numSpheres) break;
-                
-                vec3 sphereCenter = spheres[sphereIdx].centerAndRadius.xyz;
-                float sphereRadius = spheres[sphereIdx].centerAndRadius.w;
-                
-                if (distance(samplePoint, sphereCenter) <= sphereRadius) {
-                    sphereCount++;
-                }
-            }
-        } else {
-            // Internal node - add children to stack
-            int leftChild = int(node.aabbMin.w);
-            int rightChild = int(node.aabbMax.w);
-            
-            if (stackPtr < MAX_STACK_SIZE - 2) {
-                if (leftChild < nodeCount) stack[stackPtr++] = leftChild;
-                if (rightChild < nodeCount) stack[stackPtr++] = rightChild;
-            }
+    for (int i = 0; i < numSpheres; i++) {
+        vec3 sphereCenter = spheres[i].centerAndRadius.xyz;
+        float sphereRadius = spheres[i].centerAndRadius.w;
+
+        if (distance(samplePoint, sphereCenter) <= sphereRadius) {
+            sphereCount++;
         }
     }
     
@@ -149,7 +89,7 @@ void main() {
         
         while (t < tMax) {
             vec3 samplePoint = cameraPosition + t * rayDirection;
-            int sphereCount = countSpheresAtPointBVH(samplePoint);
+            int sphereCount = countSpheresAtPointBruteForce(samplePoint);
             
             density += float(sphereCount);
             t += stepSize;
