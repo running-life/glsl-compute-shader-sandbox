@@ -1,0 +1,79 @@
+#version 460 core
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// Input texture from pass 1 (ray tracing)
+layout(rgba32f, binding = 0) uniform readonly image2D inputImage;
+// Output texture for this pass
+layout(rgba32f, binding = 1) uniform writeonly image2D outputImage;
+
+// Post-processing parameters
+uniform float exposure;
+uniform float gamma;
+
+// Tone mapping function (Reinhard)
+vec3 toneMapping(vec3 color) {
+    // Exposure
+    color *= exposure;
+    
+    // Reinhard tone mapping
+    color = color / (color + vec3(1.0));
+    
+    // Gamma correction
+    color = pow(color, vec3(1.0 / gamma));
+    
+    return color;
+}
+
+// Simple blur for demonstration
+vec3 simpleBlur(ivec2 coord, ivec2 size) {
+    vec3 result = vec3(0.0);
+    float weight = 0.0;
+    
+    // 3x3 blur kernel
+    for (int x = -1; x <= 1; x++) {
+        for (int y = -1; y <= 1; y++) {
+            ivec2 sampleCoord = coord + ivec2(x, y);
+            
+            // Check bounds
+            if (sampleCoord.x >= 0 && sampleCoord.x < size.x &&
+                sampleCoord.y >= 0 && sampleCoord.y < size.y) {
+                vec3 sampleColor = imageLoad(inputImage, sampleCoord).rgb;
+                result += sampleColor;
+                weight += 1.0;
+            }
+        }
+    }
+    
+    return result / weight;
+}
+
+void main() {
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(inputImage);
+    
+    // Check bounds
+    if (coord.x >= size.x || coord.y >= size.y) {
+        return;
+    }
+    
+    // Load input color from pass 1
+    vec3 inputColor = imageLoad(inputImage, coord).rgb;
+    
+    // Apply post-processing effects
+    vec3 processedColor = inputColor;
+    
+    // Option 1: Direct tone mapping
+    processedColor = toneMapping(processedColor);
+    
+    // Option 2: Add blur effect (uncomment to enable)
+    // processedColor = simpleBlur(coord, size);
+    // processedColor = toneMapping(processedColor);
+    
+    // Option 3: Mix original and blurred (uncomment to enable)
+    // vec3 blurredColor = simpleBlur(coord, size);
+    // processedColor = mix(inputColor, blurredColor, 0.3);
+    // processedColor = toneMapping(processedColor);
+    
+    // Write to output
+    imageStore(outputImage, coord, vec4(processedColor, 1.0));
+}

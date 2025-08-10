@@ -1,0 +1,239 @@
+#version 460 core
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(rgba32f, binding = 0) uniform image2D image;
+
+// Camera uniforms
+uniform vec3 cameraPosition;
+uniform vec3 cameraFront;
+uniform vec3 cameraUp;
+uniform vec3 cameraRight;
+
+// AABB for ray marching
+uniform vec3 aabbMin;
+uniform vec3 aabbMax;
+
+uniform float cellSize;
+
+// Ray marching parameters
+const uint HASH_TABLE_SIZE = 4096 * 256;
+const float stepSize = 10;
+
+// BVH node structure
+struct BVHNode {
+    vec4 aabbMin;    // xyz = min bounds, w = leftChild index (or -1 if leaf)
+    vec4 aabbMax;    // xyz = max bounds, w = rightChild index (or sphere count if leaf)
+    uvec4 data;      // x = first sphere index (if leaf), y = sphere count (if leaf)
+};
+
+struct Sphere {
+    vec4 centerAndRadius;
+    vec4 color;
+};
+
+// Buffers
+layout(std430, binding = 1) readonly buffer SphereBuffer {
+    int numSpheres;
+    Sphere spheres[];
+};
+
+// Spatial hash table (existing)
+layout(std430, binding = 2) readonly buffer HashTableBuffer {
+    uvec2 hashTable[];
+};
+
+// BVH buffers
+layout(std430, binding = 3) readonly buffer BVHBuffer {
+    int nodeCount;
+    BVHNode nodes[];
+};
+
+layout(std430, binding = 4) readonly buffer SphereIndexBuffer {
+    uint sphereIndices[];
+};
+
+// Hash function for spatial hash (unchanged)
+uint hash(ivec3 cell) {
+    uint hash = 0;
+    hash += cell.x;
+    hash += hash << 10;
+    hash ^= hash >> 6;
+    
+    hash += cell.y;
+    hash += hash << 10;
+    hash ^= hash >> 6;
+    
+    hash += cell.z;
+    hash += hash << 10;
+    hash ^= hash >> 6;
+    
+    hash += hash << 3;
+    hash ^= hash >> 11;
+    hash += hash << 15;
+    
+    return hash % HASH_TABLE_SIZE;
+}
+
+// Check if a bit is set in the 64-bit hash table entry
+bool isBitSet(uvec2 mask, uint bit) {
+    uint wordIndex = bit >= 32 ? 1 : 0;
+    uint bitInWord = bit % 32;
+    return (mask[wordIndex] & (1u << bitInWord)) != 0u;
+}
+
+// Ray-AABB intersection function
+bool rayAABBIntersection(vec3 rayOrigin, vec3 rayDir, vec3 boxMin, vec3 boxMax, out float tMin, out float tMax) {
+    vec3 invDir = 1.0 / rayDir;
+    vec3 t0 = (boxMin - rayOrigin) * invDir;
+    vec3 t1 = (boxMax - rayOrigin) * invDir;
+    
+    vec3 tMinVec = min(t0, t1);
+    vec3 tMaxVec = max(t0, t1);
+    
+    tMin = max(max(tMinVec.x, tMinVec.y), tMinVec.z);
+    tMax = min(min(tMaxVec.x, tMaxVec.y), tMaxVec.z);
+    
+    return tMax > tMin && tMax > 0.0;
+}
+
+// Point-in-AABB test
+bool isPointInAABB(vec3 point, vec3 aabbMin, vec3 aabbMax) {
+    return all(greaterThanEqual(point, aabbMin)) && all(lessThanEqual(point, aabbMax));
+}
+
+
+// BVH-accelerated sphere count at a point
+int countSpheresAtPointBVH(vec3 samplePoint) {
+    const int MAX_STACK_SIZE = 32;
+    int stack[MAX_STACK_SIZE];
+    int stackPtr = 0;
+    int sphereCount = 0;
+    
+    if (nodeCount == 0) return 0;
+    
+    // Start with root node
+    stack[stackPtr++] = 0;
+    
+    while (stackPtr > 0) {
+        int nodeIndex = stack[--stackPtr];
+        
+        if (nodeIndex < 0 || nodeIndex >= nodeCount) continue;
+        
+        BVHNode node = nodes[nodeIndex];
+
+        sphereCount++;
+        
+        // Check if point is inside node's AABB
+        if (!isPointInAABB(samplePoint, node.aabbMin.xyz, node.aabbMax.xyz)) {
+            continue;
+        }
+        
+        // Check if it's a leaf node
+        if (node.aabbMin.w == -1) {
+            // Leaf node - check spheres
+            uint firstSphereIndex = node.data.x;
+            uint numSpheresInLeaf = uint(node.aabbMax.w);
+            
+            for (uint i = 0; i < numSpheresInLeaf; i++) {
+                uint sphereIdx = sphereIndices[firstSphereIndex + i];
+                if (sphereIdx >= numSpheres) break;
+                
+                vec3 sphereCenter = spheres[sphereIdx].centerAndRadius.xyz;
+                float sphereRadius = spheres[sphereIdx].centerAndRadius.w;
+                             
+                sphereCount++;
+            }
+        } else {
+            // Internal node - add children to stack
+            int leftChild = int(node.aabbMin.w);
+            int rightChild = int(node.aabbMax.w);
+            
+            if (stackPtr < MAX_STACK_SIZE - 2) {
+                if (leftChild < nodeCount) stack[stackPtr++] = leftChild;
+                if (rightChild < nodeCount) stack[stackPtr++] = rightChild;
+            }
+        }
+    }
+    
+    return sphereCount;
+}
+
+// Spatial hash accelerated sphere count
+int countSpheresAtPointSpatialHash(vec3 samplePoint) {
+    int sphereCount = 20;
+    
+    // Calculate grid cell
+    ivec3 cell = ivec3(floor((samplePoint - aabbMin) / cellSize));
+    
+    // Get hash table entry
+    uint hashIndex = hash(cell);
+    uvec2 sphereMask = hashTable[hashIndex];
+    
+    // Only check spheres that are in this cell
+    for (int i = 0; i < numSpheres; i++) {
+        if (isBitSet(sphereMask, i)) {
+            vec3 sphereCenter = spheres[i].centerAndRadius.xyz;
+            float sphereRadius = spheres[i].centerAndRadius.w;
+            sphereCount++;
+        }
+    }
+    
+    return sphereCount;
+}
+
+// Brute force sphere count (unchanged)
+int countSpheresAtPointBruteForce(vec3 samplePoint) {
+    int sphereCount = 0;
+    
+    for (int i = 0; i < numSpheres; i++) {
+        vec3 sphereCenter = spheres[i].centerAndRadius.xyz;
+        float sphereRadius = spheres[i].centerAndRadius.w;
+
+        
+        sphereCount++;
+    }
+    
+    return sphereCount;
+}
+
+void main() {
+    ivec2 gidx = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(image);
+    
+    // Convert pixel coordinates to normalized device coordinates
+    vec2 ndc = (2.0 * vec2(gidx) - vec2(size)) / float(size.y);
+    
+    // Create ray from camera
+    float fov = radians(45.0);
+    float aspect = float(size.x) / float(size.y);
+    vec3 rayDirection = normalize(
+        cameraFront + 
+        tan(fov * 0.5) * (ndc.x * aspect * cameraRight + ndc.y * cameraUp)
+    );
+    
+    float tMin, tMax;
+    float sphereCountBruteForce = 0.01;
+    float sphereCountSpatialHash = 0.0;
+    float sphereCountBVH = 0.0;
+    // in this compute shader, sphere count equals to sdf calcution times
+    if (rayAABBIntersection(cameraPosition, rayDirection, aabbMin, aabbMax, tMin, tMax)) {
+        // Ray marching parameters
+        float t = max(tMin, 0.0);  // Start at entry point or camera if inside
+      
+        while (t < tMax) {
+            vec3 samplePoint = cameraPosition + t * rayDirection;
+            int sphereCount = 0;
+            
+            // Choose acceleration method
+            sphereCountBVH += countSpheresAtPointBVH(samplePoint);
+            sphereCountSpatialHash += countSpheresAtPointSpatialHash(samplePoint);
+            sphereCountBruteForce += countSpheresAtPointBruteForce(samplePoint);
+
+            t += stepSize;
+        }
+    }
+    
+    float temp = 1 / sphereCountBruteForce;
+    vec3 finalColor = vec3(sphereCountSpatialHash * temp, sphereCountBVH * temp, sphereCountBruteForce);
+    imageStore(image, gidx, vec4(finalColor, 1.0));
+}
