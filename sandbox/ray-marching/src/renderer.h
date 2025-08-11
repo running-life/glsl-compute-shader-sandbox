@@ -28,7 +28,7 @@ private:
     GLuint sphereBuffer = 0;
     static constexpr int MAX_SPHERES = 64;
 
-    float stepSize = 5.0f;
+    float stepSize = 20.0f;
 
     // BVH
     BVH bvh;
@@ -88,7 +88,7 @@ public:
               std::filesystem::path(CMAKE_CURRENT_SOURCE_DIR) / "shaders" / "cull-statistics.comp"),
           rayMarchingBVHShader(
               std::filesystem::path(CMAKE_CURRENT_SOURCE_DIR) / "shaders"
-              / "ray-marching-bvh.comp"),
+              / "ray-marching-bvh-step.comp"),
           rayMarchingHashShader(
               std::filesystem::path(CMAKE_CURRENT_SOURCE_DIR) / "shaders"
               / "ray-marching-hash.comp"),

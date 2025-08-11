@@ -64,62 +64,6 @@ bool isPointInAABB(vec3 point, vec3 aabbMin, vec3 aabbMax) {
     return all(greaterThanEqual(point, aabbMin)) && all(lessThanEqual(point, aabbMax));
 }
 
-// BVH-accelerated sphere count at a point
-int countSpheresAtPointBVH(vec3 samplePoint) {
-    const int MAX_STACK_SIZE = 32;
-    int stack[MAX_STACK_SIZE];
-    int stackPtr = 0;
-    int sphereCount = 0;
-    
-    if (nodeCount == 0) return 0;
-    
-    // Start with root node
-    stack[stackPtr++] = 0;
-    
-    while (stackPtr > 0) {
-        int nodeIndex = stack[--stackPtr];
-        
-        if (nodeIndex < 0 || nodeIndex >= nodeCount) continue;
-        
-        BVHNode node = nodes[nodeIndex];
-        
-        // Check if point is inside node's AABB
-        if (!isPointInAABB(samplePoint, node.aabbMin.xyz, node.aabbMax.xyz)) {
-            continue;
-        }
-        
-        // Check if it's a leaf node
-        if (node.aabbMin.w == -1) {
-            // Leaf node - check spheres
-            uint firstSphereIndex = node.data.x;
-            uint numSpheresInLeaf = uint(node.aabbMax.w);
-            
-            for (uint i = 0; i < numSpheresInLeaf; i++) {
-                uint sphereIdx = sphereIndices[firstSphereIndex + i];
-                if (sphereIdx >= numSpheres) break;
-                
-                vec3 sphereCenter = spheres[sphereIdx].centerAndRadius.xyz;
-                float sphereRadius = spheres[sphereIdx].centerAndRadius.w;
-                
-                if (distance(samplePoint, sphereCenter) <= sphereRadius) {
-                    sphereCount++;
-                }
-            }
-        } else {
-            // Internal node - add children to stack
-            int leftChild = int(node.aabbMin.w);
-            int rightChild = int(node.aabbMax.w);
-            
-            if (stackPtr < MAX_STACK_SIZE - 2) {
-                if (leftChild < nodeCount) stack[stackPtr++] = leftChild;
-                if (rightChild < nodeCount) stack[stackPtr++] = rightChild;
-            }
-        }
-    }
-    
-    return sphereCount;
-}
-
 // Combined BVH traversal that both counts spheres and finds next intersection
 struct TraversalResult {
     int sphereCount;     // Number of spheres at current point
@@ -131,7 +75,7 @@ TraversalResult traverseBVH(vec3 samplePoint, vec3 rayOrigin, vec3 rayDir, float
     result.sphereCount = 0;
     result.nextHitDist = maxT - currentT; // Initialize to max distance
     
-    const int MAX_STACK_SIZE = 32;
+    const int MAX_STACK_SIZE = 20;
     int stack[MAX_STACK_SIZE];
     int stackPtr = 0;
         
@@ -212,6 +156,139 @@ TraversalResult traverseBVH(vec3 samplePoint, vec3 rayOrigin, vec3 rayDir, float
     return result;
 }
 
+TraversalResult traverseBVH2(vec3 samplePoint, vec3 rayOrigin, vec3 rayDir, float currentT, float maxT) {
+    TraversalResult result;
+    result.sphereCount = 0;
+    result.nextHitDist = maxT - currentT; // Initialize to max distance
+
+    const int MAX_STACK_SIZE = 48;
+    int stack[MAX_STACK_SIZE];
+    int stackPtr = 0;
+
+    // Start with root node
+    stack[stackPtr++] = 0;
+
+    while (stackPtr > 0) {
+        int nodeIndex = stack[--stackPtr];
+        
+        if (nodeIndex < 0 || nodeIndex >= nodeCount) continue;
+
+        BVHNode node = nodes[nodeIndex];
+        
+        float tMin, tMax;
+        bool rayHitsNode = rayAABBIntersection(samplePoint, rayDir, node.aabbMin.xyz, node.aabbMax.xyz, tMin, tMax);
+
+        if (!rayHitsNode) {
+            continue;
+        }
+
+        // Check if sample point is inside this node (tMin < 0 means ray starts inside)
+        if (tMin <= 0.0 && tMax > 0.0) {
+            // Sample point is inside this node
+            if (node.aabbMin.w == -1.0) {
+                // Leaf node - check spheres
+                uint firstSphereIndex = node.data.x;
+                uint numSpheresInLeaf = uint(node.aabbMax.w);
+
+                for (uint i = 0; i < numSpheresInLeaf; i++) {
+                    uint sphereIdx = sphereIndices[firstSphereIndex + i];
+                    if (sphereIdx >= numSpheres) break;
+                    
+                    vec3 sphereCenter = spheres[sphereIdx].centerAndRadius.xyz;
+                    float sphereRadius = spheres[sphereIdx].centerAndRadius.w;
+                    
+                    if (distance(samplePoint, sphereCenter) <= sphereRadius) {
+                        result.sphereCount++;
+                    }
+                }
+                result.nextHitDist = stepSize;
+            } else {
+                // Internal node - add children to stack
+                int leftChild = int(node.aabbMin.w);
+                int rightChild = int(node.aabbMax.w);
+
+                if (stackPtr < MAX_STACK_SIZE - 2) {
+                    if (rightChild < nodeCount) stack[stackPtr++] = rightChild;
+                    if (leftChild < nodeCount) stack[stackPtr++] = leftChild;
+                }
+            }
+        } else if (tMin > 0.0) {
+            // Sample point is outside this node, ray will hit it at tMin
+            result.nextHitDist = min(result.nextHitDist, tMin);
+            
+            // Still traverse children to find all potential hits
+            if (node.aabbMin.w != -1.0) {
+                int leftChild = int(node.aabbMin.w);
+                int rightChild = int(node.aabbMax.w);
+
+                if (stackPtr < MAX_STACK_SIZE - 2) {
+                    if (rightChild < nodeCount) stack[stackPtr++] = rightChild;
+                    if (leftChild < nodeCount) stack[stackPtr++] = leftChild;
+                }
+            }
+        }
+    }
+    
+    return result;
+}
+
+TraversalResult traverseBVHOrigin(vec3 samplePoint, vec3 rayOrigin, vec3 rayDir, float currentT, float maxT) {
+    TraversalResult result;
+    result.sphereCount = 0;
+    result.nextHitDist = stepSize;
+
+    const int MAX_STACK_SIZE = 32;
+    int stack[MAX_STACK_SIZE];
+    int stackPtr = 0;
+
+    stack[stackPtr++] = 0;
+
+    while (stackPtr > 0) {
+        int nodeIndex = stack[--stackPtr];
+        
+        if (nodeIndex < 0 || nodeIndex >= nodeCount) continue;
+        
+        BVHNode node = nodes[nodeIndex];
+        
+        // Check if point is inside node's AABB
+        if (!isPointInAABB(samplePoint, node.aabbMin.xyz, node.aabbMax.xyz)) {
+            continue;
+        }
+        
+        // Check if it's a leaf node
+        if (node.aabbMin.w == -1) {
+            // Leaf node - check spheres
+            uint firstSphereIndex = node.data.x;
+            uint numSpheresInLeaf = uint(node.aabbMax.w);
+            
+            for (uint i = 0; i < numSpheresInLeaf; i++) {
+                uint sphereIdx = sphereIndices[firstSphereIndex + i];
+                if (sphereIdx >= numSpheres) break;
+                
+                vec3 sphereCenter = spheres[sphereIdx].centerAndRadius.xyz;
+                float sphereRadius = spheres[sphereIdx].centerAndRadius.w;
+                
+                if (distance(samplePoint, sphereCenter) <= sphereRadius) {
+                    result.sphereCount++;
+                }
+            }
+        } else {
+            // Internal node - add children to stack
+            int leftChild = int(node.aabbMin.w);
+            int rightChild = int(node.aabbMax.w);
+            
+            if (stackPtr < MAX_STACK_SIZE - 2) {
+                if (leftChild < nodeCount) stack[stackPtr++] = leftChild;
+                if (rightChild < nodeCount) stack[stackPtr++] = rightChild;
+            }
+        }
+    }
+
+    return result;
+}
+
+
+
 void main() {
     ivec2 gidx = ivec2(gl_GlobalInvocationID.xy);
     ivec2 size = imageSize(image);
@@ -241,17 +318,19 @@ void main() {
         
         while (t < tMax) {
             vec3 samplePoint = cameraPosition + t * rayDirection;
-            TraversalResult traversalResult = traverseBVH(samplePoint, cameraPosition, rayDirection, t, tMax);
+            TraversalResult traversalResult = traverseBVH2(samplePoint, cameraPosition, rayDirection, t, tMax);
 
             density += float(traversalResult.sphereCount);
+
+            t += max(traversalResult.nextHitDist, stepSize);
             
-            if (traversalResult.sphereCount > 0) {
-                // If we found spheres, update the next hit distance
-                t += stepSize;
-            } else {
-                // No spheres found, just step forward
-                t += max(traversalResult.nextHitDist, stepSize);
-            }
+            // if (traversalResult.sphereCount > 0) {
+            //     // If we found spheres, update the next hit distance
+            //     t += stepSize;
+            // } else {
+            //     // No spheres found, just step forward
+            //     t += max(traversalResult.nextHitDist, stepSize);
+            // }
         }
         
         // Normalize density and map to color
