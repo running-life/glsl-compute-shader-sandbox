@@ -1,0 +1,119 @@
+#version 460 core
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(rgba32f, binding = 0) uniform image2D image;
+
+// Camera uniforms
+uniform vec3 cameraPosition;
+uniform vec3 cameraFront;
+uniform vec3 cameraUp;
+uniform vec3 cameraRight;
+
+// Background color
+uniform vec3 backgroundColor;
+
+// Sphere data structure
+// struct Sphere {
+//     vec3 center;
+//     float radius;
+//     vec3 color;
+//     float padding; // For alignment
+// };
+
+struct Sphere {
+    vec4 centerAndRadius;
+    vec4 color; // RGB color and padding for alignment
+};
+
+// Sphere buffer
+layout(std430, binding = 1) readonly buffer SphereBuffer {
+    int numSpheres;
+    Sphere spheres[];
+};
+
+// Ray-sphere intersection function
+// Returns -1 if no intersection, otherwise returns the distance to the nearest intersection point
+float raySphereIntersection(vec3 rayOrigin, vec3 rayDirection, vec3 sphereCenter, float sphereRadius) {
+    vec3 oc = rayOrigin - sphereCenter;
+    float a = dot(rayDirection, rayDirection);
+    float b = 2.0 * dot(oc, rayDirection);
+    float c = dot(oc, oc) - sphereRadius * sphereRadius;
+    
+    float discriminant = b * b - 4 * a * c;
+    
+    if (discriminant < 0.0) {
+        return -1.0; // No intersection
+    } else {
+        float sqrt_discriminant = sqrt(discriminant);
+        float t1 = (-b - sqrt_discriminant) / (2.0 * a);
+        float t2 = (-b + sqrt_discriminant) / (2.0 * a);
+        
+        // Return the nearest positive intersection
+        if (t1 > 0.0) {
+            return t1;
+        } else if (t2 > 0.0) {
+            return t2;
+        } else {
+            return -1.0; // Both intersections are behind the ray origin
+        }
+    }
+}
+
+void main() {
+    ivec2 gidx = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(image);
+    
+    // Convert pixel coordinates to normalized device coordinates (-1 to 1)
+    vec2 ndc = (2.0 * vec2(gidx) - vec2(size)) / float(size.y);
+    
+    // Create ray from camera
+    float fov = radians(45.0); // 45 degree field of view
+    float aspect = float(size.x) / float(size.y);
+    
+    vec3 rayDirection = normalize(
+        cameraFront + 
+        tan(fov * 0.5) * (ndc.x * aspect * cameraRight + ndc.y * cameraUp)
+    );
+    
+    // Find closest sphere intersection
+    float closestT = -1.0;
+    vec3 closestColor = backgroundColor; // Default to background color
+    vec3 closestHitPoint;
+    vec3 closestNormal;
+    
+    for (int i = 0; i < numSpheres; i++) {
+
+        vec3 sphereCenter = spheres[i].centerAndRadius.xyz;
+        float sphereRadius = spheres[i].centerAndRadius.w;
+        vec3 sphereColor = spheres[i].color.xyz;
+
+        float t = raySphereIntersection(cameraPosition, rayDirection, 
+                                       sphereCenter, sphereRadius);
+        
+        if (t > 0.0 && (closestT < 0.0 || t < closestT)) {
+            closestT = t;
+            closestHitPoint = cameraPosition + t * rayDirection;
+            closestNormal = normalize(closestHitPoint - sphereCenter);
+            
+            // Simple shading with multiple light sources for cloud-like appearance
+            vec3 lightDirection1 = normalize(vec3(1.0, 1.0, 1.0));  // Main sun light
+            vec3 lightDirection2 = normalize(vec3(-0.5, 0.8, 0.2)); // Sky ambient
+            
+            float lightIntensity1 = max(dot(closestNormal, lightDirection1), 0.0);
+            float lightIntensity2 = max(dot(closestNormal, lightDirection2), 0.0);
+            
+            // Add ambient and multiple light contributions
+            float ambient = 0.3;
+            float diffuse = lightIntensity1 * 0.8 + lightIntensity2 * 0.4;
+            
+            // Add some atmospheric scattering effect based on distance
+            // float atmosphericFade = exp(-t * 0.02); // Fade with distance
+            float atmosphericFade = 1.0;
+            
+            closestColor = sphereColor * (ambient + diffuse) * atmosphericFade;
+        }
+    }
+    
+    imageStore(image, gidx, vec4(closestColor, 1.0));
+}
+

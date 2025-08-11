@@ -1,0 +1,188 @@
+#version 460 core
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(rgba32f, binding = 0) uniform image2D image;
+
+// Camera uniforms
+uniform vec3 cameraPosition;
+uniform vec3 cameraFront;
+uniform vec3 cameraUp;
+uniform vec3 cameraRight;
+uniform vec3 backgroundColor;
+
+// AABB for ray marching
+uniform vec3 aabbMin;
+uniform vec3 aabbMax;
+
+uniform bool useSpatialHash;
+uniform bool useBVH;
+uniform float cellSize;
+const uint HASH_TABLE_SIZE = 4096 * 16;
+const float stepSize = 50;
+
+struct Sphere {
+    vec4 centerAndRadius;
+    vec4 color; // RGB color and padding for alignment
+};
+
+// Sphere buffer
+layout(std430, binding = 1) readonly buffer SphereBuffer {
+    int numSpheres;
+    Sphere spheres[];
+};
+
+// Hash table buffer
+layout(std430, binding = 2) readonly buffer HashTableBuffer {
+    uvec2 hashTable[];
+};
+
+// Hash function (same as in build-spatial-hash.comp)
+uint hash(ivec3 cell) {
+    // Same implementation as in the hash builder shader
+    uint hash = 0;
+    hash += cell.x;
+    hash += hash << 10;
+    hash ^= hash >> 6;
+    
+    hash += cell.y;
+    hash += hash << 10;
+    hash ^= hash >> 6;
+    
+    hash += cell.z;
+    hash += hash << 10;
+    hash ^= hash >> 6;
+    
+    hash += hash << 3;
+    hash ^= hash >> 11;
+    hash += hash << 15;
+    
+    return hash % HASH_TABLE_SIZE;
+}
+
+// Check if a bit is set in the 64-bit hash table entry
+bool isBitSet(uvec2 mask, uint bit) {
+    uint wordIndex = bit >= 32 ? 1 : 0;
+    uint bitInWord = bit % 32;
+    return (mask[wordIndex] & (1u << bitInWord)) != 0u;
+}
+
+// some funtion to cost time
+float computeCostFunction(vec3 sphereCenter, float sphereRadius) {
+    float tempa = sin(sphereCenter.x) / max(sphereRadius, 1);
+    float tempb = cos(sphereCenter.y) / max(sphereRadius, 1);
+    float tempc = sin(sphereCenter.z) / max(sphereRadius, 1);
+    return tempa * tempb * tempc;
+}
+
+// Ray-AABB intersection function
+// Returns tMin, tMax values along ray
+bool rayAABBIntersection(vec3 rayOrigin, vec3 rayDir, vec3 boxMin, vec3 boxMax, out float tMin, out float tMax) {
+    vec3 invDir = 1.0 / rayDir;
+    vec3 t0 = (boxMin - rayOrigin) * invDir;
+    vec3 t1 = (boxMax - rayOrigin) * invDir;
+    
+    vec3 tMinVec = min(t0, t1);
+    vec3 tMaxVec = max(t0, t1);
+    
+    tMin = max(max(tMinVec.x, tMinVec.y), tMinVec.z);
+    tMax = min(min(tMaxVec.x, tMaxVec.y), tMaxVec.z);
+    
+    return tMax > tMin && tMax > 0.0;
+}
+
+// Check if point is inside a sphere
+bool isPointInSphere(vec3 point, vec3 sphereCenter, float sphereRadius) {
+    return distance(point, sphereCenter) <= sphereRadius;
+}
+
+void main() {
+    ivec2 gidx = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(image);
+    
+    // Convert pixel coordinates to normalized device coordinates
+    vec2 ndc = (2.0 * vec2(gidx) - vec2(size)) / float(size.y);
+    
+    // Create ray from camera
+    float fov = radians(45.0);
+    float aspect = float(size.x) / float(size.y);
+    vec3 rayDirection = normalize(
+        cameraFront + 
+        tan(fov * 0.5) * (ndc.x * aspect * cameraRight + ndc.y * cameraUp)
+    );
+    
+    // Default background color
+    vec3 finalColor = backgroundColor;
+    
+    float tMin, tMax;
+    if (rayAABBIntersection(cameraPosition, rayDirection, aabbMin, aabbMax, tMin, tMax)) {
+        // Ray marching parameters
+        // float stepSize = (tMax - tMin) / 50.0; // 50 steps through volume
+        float t = max(tMin, 0.0);              // Start at entry point or camera if inside
+        
+        // Color accumulation
+        float density = 0.0;
+        float maxDensity = 10.0; // For normalization
+        
+        while (t < tMax) {
+            vec3 samplePoint = cameraPosition + t * rayDirection;
+            int sphereCount = 0;
+            
+            if (useSpatialHash) {
+                // Calculate grid cell
+                ivec3 cell = ivec3(floor((samplePoint - aabbMin) / cellSize));
+                
+                // Get hash table entry
+                uint hashIndex = hash(cell);
+                uvec2 sphereMask = hashTable[hashIndex];
+                
+                // Only check spheres that are in this cell
+                for (int i = 0; i < numSpheres; i++) {
+                    if (isBitSet(sphereMask, i)) {
+                        vec3 sphereCenter = spheres[i].centerAndRadius.xyz;
+                        float sphereRadius = spheres[i].centerAndRadius.w;
+
+                        computeCostFunction(sphereCenter, sphereRadius);
+                        
+                        if (distance(samplePoint, sphereCenter) <= sphereRadius) {
+                            sphereCount++;
+                        }
+                    }
+                }
+            } else {
+                // Check all spheres (original code)
+                for (int i = 0; i < numSpheres; i++) {
+                    vec3 sphereCenter = spheres[i].centerAndRadius.xyz;
+                    float sphereRadius = spheres[i].centerAndRadius.w;
+
+                    computeCostFunction(sphereCenter, sphereRadius);
+                    
+                    if (distance(samplePoint, sphereCenter) <= sphereRadius) {
+                        sphereCount++;
+                    }
+                }
+            }
+
+            density += float(sphereCount);
+            t += stepSize;
+        }
+
+        
+        // Normalize density and map to color
+        float normalizedDensity = min(density / maxDensity, 1.0);
+        
+        // Simple color gradient based on density
+        if (normalizedDensity > 0.0) {
+            // Cool to warm color map
+            vec3 coolColor = vec3(0.0, 0.0, 0.6);  // Deep blue
+            vec3 warmColor = vec3(1.0, 0.4, 0.0);  // Orange
+            
+            finalColor = mix(coolColor, warmColor, normalizedDensity);
+            
+            // Add brightness based on density
+            float brightness = 0.5 + 0.5 * normalizedDensity;
+            finalColor *= brightness;
+        }
+    }
+    
+    imageStore(image, gidx, vec4(finalColor, 1.0));
+}
