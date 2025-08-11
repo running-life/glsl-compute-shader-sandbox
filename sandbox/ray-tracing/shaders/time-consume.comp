@@ -1,5 +1,5 @@
 #version 460 core
-layout(local_size_x = 8, local_size_y = 8) in;
+layout(local_size_x = 16, local_size_y = 16) in;
 
 layout(rgba32f, binding = 0) uniform image2D image;
 
@@ -35,9 +35,14 @@ struct Sphere {
 };
 
 // Buffers
-layout(std430, binding = 1) readonly buffer SphereBuffer {
+// layout(std430, binding = 1) readonly buffer SphereBuffer {
+//     int numSpheres;
+//     Sphere spheres[];
+// };
+
+layout(std140, binding = 1) uniform SphereBuffer {
     int numSpheres;
-    Sphere spheres[];
+    Sphere spheres[64];
 };
 
 // Spatial hash table (existing)
@@ -46,13 +51,22 @@ layout(std430, binding = 2) readonly buffer HashTableBuffer {
 };
 
 // BVH buffers
-layout(std430, binding = 3) readonly buffer BVHBuffer {
+// layout(std430, binding = 3) readonly buffer BVHBuffer {
+//     int nodeCount;
+//     BVHNode nodes[];
+// };
+
+// layout(std430, binding = 4) readonly buffer SphereIndexBuffer {
+//     uint sphereIndices[];
+// };
+
+layout(std140, binding = 3) uniform BVHBuffer {
     int nodeCount;
-    BVHNode nodes[];
+    BVHNode nodes[100];
 };
 
-layout(std430, binding = 4) readonly buffer SphereIndexBuffer {
-    uint sphereIndices[];
+layout(std140, binding = 4) uniform SphereIndexBuffer {
+    uint sphereIndices[64];
 };
 
 // Hash function for spatial hash (unchanged)

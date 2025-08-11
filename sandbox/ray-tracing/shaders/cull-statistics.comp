@@ -17,7 +17,7 @@ uniform float cellSize;
 
 // Ray marching parameters
 const uint HASH_TABLE_SIZE = 4096 * 256;
-const float stepSize = 10;
+const float stepSize = 20;
 
 // BVH node structure
 struct BVHNode {
@@ -32,9 +32,14 @@ struct Sphere {
 };
 
 // Buffers
-layout(std430, binding = 1) readonly buffer SphereBuffer {
+// layout(std430, binding = 1) readonly buffer SphereBuffer {
+//     int numSpheres;
+//     Sphere spheres[];
+// };
+
+layout(std140, binding = 1) uniform SphereBuffer {
     int numSpheres;
-    Sphere spheres[];
+    Sphere spheres[64];
 };
 
 // Spatial hash table (existing)
@@ -43,13 +48,22 @@ layout(std430, binding = 2) readonly buffer HashTableBuffer {
 };
 
 // BVH buffers
-layout(std430, binding = 3) readonly buffer BVHBuffer {
+// layout(std430, binding = 3) readonly buffer BVHBuffer {
+//     int nodeCount;
+//     BVHNode nodes[];
+// };
+
+// layout(std430, binding = 4) readonly buffer SphereIndexBuffer {
+//     uint sphereIndices[];
+// };
+
+layout(std140, binding = 3) uniform BVHBuffer {
     int nodeCount;
-    BVHNode nodes[];
+    BVHNode nodes[100];
 };
 
-layout(std430, binding = 4) readonly buffer SphereIndexBuffer {
-    uint sphereIndices[];
+layout(std140, binding = 4) uniform SphereIndexBuffer {
+    uint sphereIndices[64];
 };
 
 // Hash function for spatial hash (unchanged)
@@ -121,7 +135,7 @@ int countSpheresAtPointBVH(vec3 samplePoint) {
         
         BVHNode node = nodes[nodeIndex];
 
-        sphereCount++;
+        // sphereCount++;
         
         // Check if point is inside node's AABB
         if (!isPointInAABB(samplePoint, node.aabbMin.xyz, node.aabbMax.xyz)) {
@@ -160,7 +174,7 @@ int countSpheresAtPointBVH(vec3 samplePoint) {
 
 // Spatial hash accelerated sphere count
 int countSpheresAtPointSpatialHash(vec3 samplePoint) {
-    int sphereCount = 20;
+    int sphereCount = 0;
     
     // Calculate grid cell
     ivec3 cell = ivec3(floor((samplePoint - aabbMin) / cellSize));

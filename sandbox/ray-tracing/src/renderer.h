@@ -106,7 +106,8 @@ public:
 
         // create BVH buffer
         createBVHBuffer();
-        buildBVH();
+        // buildBVH();
+        buildBVHAsUBO();
     }
 
     ~Renderer() {
@@ -183,7 +184,8 @@ private:
 
         // Bind sphere buffer
         if (sphereBuffer != 0) {
-            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, sphereBuffer);
+            // glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, sphereBuffer);
+            glBindBufferBase(GL_UNIFORM_BUFFER, 1, sphereBuffer);
         }
 
         // Bind hash table if using acceleration
@@ -193,8 +195,11 @@ private:
 
         if (useBVH) {
             if (bvhBuffer != 0 && sphereIndexBuffer != 0 && !bvh.getGPUNodes().empty()) {
-                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, bvhBuffer);
-                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, sphereIndexBuffer);
+                // glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, bvhBuffer);
+                // glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, sphereIndexBuffer);
+
+                glBindBufferBase(GL_UNIFORM_BUFFER, 3, bvhBuffer);
+                glBindBufferBase(GL_UNIFORM_BUFFER, 4, sphereIndexBuffer);
             } else {
                 useBVH = false;
             }
@@ -229,7 +234,8 @@ private:
 
         // Bind sphere buffer
         if (sphereBuffer != 0) {
-            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, sphereBuffer);
+            // glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, sphereBuffer);
+            glBindBufferBase(GL_UNIFORM_BUFFER, 1, sphereBuffer);
         }
 
         // Bind hash table if using acceleration
@@ -239,8 +245,11 @@ private:
 
         if (useBVH) {
             if (bvhBuffer != 0 && sphereIndexBuffer != 0 && !bvh.getGPUNodes().empty()) {
-                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, bvhBuffer);
-                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, sphereIndexBuffer);
+                // glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, bvhBuffer);
+                // glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, sphereIndexBuffer);
+
+                glBindBufferBase(GL_UNIFORM_BUFFER, 3, bvhBuffer);
+                glBindBufferBase(GL_UNIFORM_BUFFER, 4, sphereIndexBuffer);
             } else {
                 useBVH = false;
             }
@@ -261,7 +270,7 @@ private:
 
         timeConsumePipeline.activate();
         glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, 2, -1, "time consume");
-        glDispatchCompute(std::ceil(resolution.x / 8.0f), std::ceil(resolution.y / 8.0f), 1);
+        glDispatchCompute(std::ceil(resolution.x / 16.0f), std::ceil(resolution.y / 16.0f), 1);
         glPopDebugGroup();
         timeConsumePipeline.deactivate();
 
@@ -279,13 +288,17 @@ private:
 
         // Bind sphere buffer
         if (sphereBuffer != 0) {
-            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, sphereBuffer);
+            // glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, sphereBuffer);
+            glBindBufferBase(GL_UNIFORM_BUFFER, 1, sphereBuffer);
         }
 
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, hashTableBuffer);
 
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, bvhBuffer);
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, sphereIndexBuffer);
+        // glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, bvhBuffer);
+        // glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, sphereIndexBuffer);
+
+        glBindBufferBase(GL_UNIFORM_BUFFER, 3, bvhBuffer);
+        glBindBufferBase(GL_UNIFORM_BUFFER, 4, sphereIndexBuffer);
 
         cullStatisticShader.setUniform("cellSize", CELL_SIZE);
 
@@ -315,7 +328,11 @@ private:
             GL_DYNAMIC_DRAW);
 
         // Bind input spheres and output hash table
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, sphereBuffer);
+        // glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, sphereBuffer);
+        if (sphereBuffer != 0) {
+            // glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, sphereBuffer);
+            glBindBufferBase(GL_UNIFORM_BUFFER, 1, sphereBuffer);
+        }
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, hashTableBuffer);
 
         // Set uniforms
@@ -360,6 +377,41 @@ private:
             GL_DYNAMIC_DRAW);
 
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    }
+
+    void buildBVHAsUBO() {
+        bvh.build(packedSpheres);
+        bvh.printStats();
+
+        const auto& nodes = bvh.getGPUNodes();
+        const auto& indices = bvh.getGPUSphereIndices();
+
+        std::vector<uint32_t> paddedIndices;
+        paddedIndices.reserve(indices.size() * 4); 
+        for (uint32_t index : indices) {
+            paddedIndices.push_back(index);
+            paddedIndices.push_back(0); // padding
+            paddedIndices.push_back(0); // padding
+            paddedIndices.push_back(0); // padding
+        }
+
+        const GLintptr bvhDataOffset = 16;
+
+        glBindBuffer(GL_UNIFORM_BUFFER, bvhBuffer);
+        glBufferData(
+            GL_UNIFORM_BUFFER, 16 + nodes.size() * sizeof(BVHNodeGPU), nullptr, GL_STATIC_DRAW);
+
+        int nodeCount = static_cast<int>(nodes.size());
+        glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(int), &nodeCount);
+
+        glBufferSubData(
+            GL_UNIFORM_BUFFER, bvhDataOffset, nodes.size() * sizeof(BVHNodeGPU), nodes.data());
+
+        glBindBuffer(GL_UNIFORM_BUFFER, sphereIndexBuffer);
+        glBufferData(
+            GL_UNIFORM_BUFFER, paddedIndices.size() * sizeof(uint32_t), paddedIndices.data(), GL_STATIC_DRAW);
+
+        glBindBuffer(GL_UNIFORM_BUFFER, 0);
     }
 
     void renderPassDisplay() {
@@ -429,24 +481,20 @@ private:
             spheres.push_back(sphere);
         }
 
+        std::sort(spheres.begin(), spheres.end(), [](const SphereData& a, const SphereData& b) {
+            return a.centerZ < b.centerZ;
+        });
+        
         packedSpheres.reserve(spheres.size());
         for (const auto& sphere : spheres) {
             packedSpheres.emplace_back(sphere);
         }
-
-        // Override the first sphere with specific values
-        // spheres[0].centerX = 0.0f;
-        // spheres[0].centerY = 0.0f;
-        // spheres[0].centerZ = -5.0f;
-        // spheres[0].radius = 1.0f;
-        // spheres[0].colorR = 1.0f;  // Red
-        // spheres[0].colorG = 0.0f;
-        // spheres[0].colorB = 0.0f;
     }
 
     void createSphereBuffer() {
         glGenBuffers(1, &sphereBuffer);
-        updateSphereBuffer();
+        // updateSphereBuffer();
+        updateSphereBufferAsUBO();
     }
 
     // TODO: discard the struct SphereData and use SphereDataPacked instead
@@ -478,6 +526,32 @@ private:
         }
 
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    }
+
+    void updateSphereBufferAsUBO() {
+        if (sphereBuffer == 0) {
+            std::cerr << "Sphere buffer not created!" << std::endl;
+        }
+
+        calculateAABB();
+
+        // Bind the buffer
+        glBindBuffer(GL_UNIFORM_BUFFER, sphereBuffer);
+
+        const GLintptr sphereDataOffset = 16;
+        const GLsizeiptr sphereDataSize = spheres.size() * sizeof(SphereDataPacked);
+        const GLsizeiptr bufferSize = sphereDataOffset + sphereDataSize;
+
+        glBufferData(GL_UNIFORM_BUFFER, bufferSize, nullptr, GL_STATIC_DRAW);
+        int numSpheres = static_cast<int>(packedSpheres.size());
+        glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(int), &numSpheres);
+
+        if (!spheres.empty()) {
+            glBufferSubData(
+                GL_UNIFORM_BUFFER, sphereDataOffset, sphereDataSize, packedSpheres.data());
+        }
+
+        glBindBuffer(GL_UNIFORM_BUFFER, 0);
     }
 
     void calculateAABB() {

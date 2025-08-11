@@ -15,8 +15,8 @@
 
 Renderer* RENDERER;
 
-const glm::uint windowWidth = 1000;
-const glm::uint windowHeight = 1000;
+const glm::uint windowWidth = 810;
+const glm::uint windowHeight = 540;
 
 static void glfwErrorCallback(int error, const char* description) {
     fprintf(stderr, "Glfw Error %d: %s\n", error, description);
