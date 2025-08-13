@@ -37,7 +37,7 @@ layout(std140, binding = 1) uniform SphereBuffer {
 // BVH buffers
 layout(std140, binding = 2) uniform BVHBuffer {
     int nodeCount;
-    BVHNode nodes[100];
+    BVHNode nodes[150];
 };
 
 layout(std140, binding = 3) uniform SphereIndexBuffer {
@@ -76,7 +76,7 @@ TraversalResult traverseBVH(vec3 samplePoint, vec3 rayOrigin, vec3 rayDir, float
     result.sphereCount = 0;
     result.nextHitDist = maxT - currentT; // Initialize to max distance
 
-    const int MAX_STACK_SIZE = 48;
+    const int MAX_STACK_SIZE = 32;
     int stack[MAX_STACK_SIZE];
     int stackPtr = 0;
 
@@ -103,7 +103,9 @@ TraversalResult traverseBVH(vec3 samplePoint, vec3 rayOrigin, vec3 rayDir, float
             if (node.aabbMin.w == -1.0) {
                 // Leaf node - check spheres
                 uint firstSphereIndex = node.data.x;
-                uint numSpheresInLeaf = uint(node.aabbMax.w);
+                // uint numSpheresInLeaf = uint(node.aabbMax.w);
+                uint numSpheresInLeaf = uint(node.data.y);
+
 
                 for (uint i = 0; i < numSpheresInLeaf; i++) {
                     uint sphereIdx = sphereIndices[firstSphereIndex + i];
@@ -141,6 +143,75 @@ TraversalResult traverseBVH(vec3 samplePoint, vec3 rayOrigin, vec3 rayDir, float
             //         if (leftChild < nodeCount) stack[stackPtr++] = leftChild;
             //     }
             // }
+        }
+    }
+    
+    return result;
+}
+
+TraversalResult traverseBVH2(vec3 samplePoint, vec3 rayOrigin, vec3 rayDir, float currentT, float maxT, inout int root) {
+    TraversalResult result;
+    result.sphereCount = 0;
+    result.nextHitDist = maxT - currentT; // Initialize to max distance
+
+    const int MAX_STACK_SIZE = 48;
+    int stack[MAX_STACK_SIZE];
+    int stackPtr = 0;
+
+    // Start with root node
+    stack[stackPtr++] = root;
+    root = 0;
+
+    while (stackPtr > 0) {
+        int nodeIndex = stack[--stackPtr];
+        
+        if (nodeIndex < 0 || nodeIndex >= nodeCount) continue;
+
+        BVHNode node = nodes[nodeIndex];
+        
+        float tMin, tMax;
+        bool rayHitsNode = rayAABBIntersection(samplePoint, rayDir, node.aabbMin.xyz, node.aabbMax.xyz, tMin, tMax);
+
+        if (!rayHitsNode) {
+            continue;
+        }
+
+        // Check if sample point is inside this node (tMin < 0 means ray starts inside)
+        if (tMin <= 0.0 && tMax > 0.0) {
+            // Sample point is inside this node
+            if (node.aabbMin.w == -1.0) {
+                // Leaf node - check spheres
+                uint firstSphereIndex = node.data.x;
+                // uint numSpheresInLeaf = uint(node.aabbMax.w);
+                uint numSpheresInLeaf = uint(node.data.y);
+
+
+                for (uint i = 0; i < numSpheresInLeaf; i++) {
+                    uint sphereIdx = sphereIndices[firstSphereIndex + i];
+                    if (sphereIdx >= numSpheres) break;
+                    
+                    vec3 sphereCenter = spheres[sphereIdx].centerAndRadius.xyz;
+                    float sphereRadius = spheres[sphereIdx].centerAndRadius.w;
+                    
+                    if (distance(samplePoint, sphereCenter) <= sphereRadius) {
+                        result.sphereCount++;
+                        root = int(node.data.z);
+                    }
+                }
+                result.nextHitDist = stepSize;
+            } else {
+                // Internal node - add children to stack
+                int leftChild = int(node.aabbMin.w);
+                int rightChild = int(node.aabbMax.w);
+
+                if (stackPtr < MAX_STACK_SIZE - 2) {
+                    if (rightChild < nodeCount) stack[stackPtr++] = rightChild;
+                    if (leftChild < nodeCount) stack[stackPtr++] = leftChild;
+                }
+            }
+        } else if (tMin > 0.0) {
+            // Sample point is outside this node, ray will hit it at tMin
+            result.nextHitDist = min(result.nextHitDist, tMin);
         }
     }
     
@@ -230,10 +301,12 @@ void main() {
         // Color accumulation
         float density = 0.0;
         float maxDensity = 70.0; // For normalization
+        int root = 0;
         
         while (t < tMax) {
             vec3 samplePoint = cameraPosition + t * rayDirection;
             TraversalResult traversalResult = traverseBVH(samplePoint, cameraPosition, rayDirection, t, tMax);
+            // TraversalResult traversalResult = traverseBVH2(samplePoint, cameraPosition, rayDirection, t, tMax, root);
 
             density += float(traversalResult.sphereCount);
 

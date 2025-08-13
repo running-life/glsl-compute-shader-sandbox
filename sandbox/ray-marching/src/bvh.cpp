@@ -29,6 +29,7 @@ void BVH::rebuild(const std::vector<SphereDataPacked>& spheres) {
     build(spheres);
 }
 
+#if 0
 std::unique_ptr<BVHNodeCPU> BVH::buildRecursive(
     const std::vector<SphereDataPacked>& spheres, std::vector<uint32_t>& indices, int depth) {
     auto node = std::make_unique<BVHNodeCPU>();
@@ -38,6 +39,11 @@ std::unique_ptr<BVHNodeCPU> BVH::buildRecursive(
     if (indices.size() <= MAX_LEAF_SIZE || depth >= MAX_DEPTH) {
         node->isLeaf = true;
         return node;
+    }
+
+    if (indices.size() != 0 && indices[0] == 11) {
+        int a = 5;
+        a += 1;
     }
 
     // find best split
@@ -74,6 +80,53 @@ std::unique_ptr<BVHNodeCPU> BVH::buildRecursive(
 
     return node;
 }
+#else
+
+std::unique_ptr<BVHNodeCPU> BVH::buildRecursive(
+    const std::vector<SphereDataPacked>& spheres, std::vector<uint32_t>& indices, int depth) {
+    auto node = std::make_unique<BVHNodeCPU>();
+    node->sphereIndices = indices;
+    node->calculateAABB(spheres);
+
+    if (indices.size() == 1) {
+        node->isLeaf = true;
+        return node;
+    }
+
+    if (indices.size() == 0) {
+        node->isLeaf = true;
+        return node;
+    }
+
+    if (depth >= MAX_DEPTH) {
+        return forceSplit(spheres, indices, depth);
+    }
+
+    SplitInfo bestSplit = findBestSplit(spheres, indices, node->aabbMin, node->aabbMax);
+
+    if (!bestSplit.isValid()) {
+        return forceSplit(spheres, indices, depth);
+    }
+
+    float leafCost = INTERSECTION_COST * indices.size();
+
+    size_t splitIndex = partitionSpheres(spheres, indices, bestSplit);
+
+    if (splitIndex == 0 || splitIndex == indices.size()) {
+        return forceSplit(spheres, indices, depth);
+    }
+
+    std::vector<uint32_t> leftIndices(indices.begin(), indices.begin() + splitIndex);
+    std::vector<uint32_t> rightIndices(indices.begin() + splitIndex, indices.end());
+
+    node->leftChild = buildRecursive(spheres, leftIndices, depth + 1);
+    node->rightChild = buildRecursive(spheres, rightIndices, depth + 1);
+    node->isLeaf = false;
+
+    return node;
+}
+
+#endif
 
 SplitInfo BVH::findBestSplit(
     const std::vector<SphereDataPacked>& spheres, const std::vector<uint32_t>& indices,
@@ -191,6 +244,23 @@ void BVH::convertToGPUFormat() {
     gpuSphereIndices.reserve(estimatedNodeCount * 2);
 
     convertNodeToGPU(root.get());
+
+    // set grandparent
+    gpuNodes[0].data.z = static_cast<uint32_t>(0);
+    for (auto& currNode : gpuNodes) {
+        currNode.data.z = gpuNodes[currNode.data.z].data.z;
+    }
+
+    // check the num of leaf nodes
+
+    std::vector<int> checkResults(10, 0);
+
+    for (auto& currNode : gpuNodes) {
+        if (currNode.aabbMin.w == -1) {
+            checkResults[(int)currNode.aabbMax.w]++;
+        }
+    }
+
     gpuNodes.shrink_to_fit();
     gpuSphereIndices.shrink_to_fit();
 }
@@ -233,6 +303,7 @@ size_t BVH::convertNodeToGPU(const BVHNodeCPU* node) {
     if (node->isLeaf) {
         gpuNodes[nodeIndex].aabbMin.w = -1;
         gpuNodes[nodeIndex].aabbMax.w = static_cast<float>(node->sphereIndices.size());
+        gpuNodes[nodeIndex].data.y = static_cast<uint32_t>(gpuNodes[nodeIndex].aabbMax.w);
         gpuNodes[nodeIndex].data.x = static_cast<uint32_t>(gpuSphereIndices.size());
 
         for (uint32_t sphereIdx : node->sphereIndices) {
@@ -244,6 +315,10 @@ size_t BVH::convertNodeToGPU(const BVHNodeCPU* node) {
 
         gpuNodes[nodeIndex].aabbMin.w = static_cast<float>(leftChild);
         gpuNodes[nodeIndex].aabbMax.w = static_cast<float>(rightChild);
+
+        // set parent
+        gpuNodes[leftChild].data.z = static_cast<uint32_t>(nodeIndex);
+        gpuNodes[rightChild].data.z = static_cast<uint32_t>(nodeIndex);
     }
 
     return nodeIndex;
@@ -270,4 +345,41 @@ void BVH::printStats() const {
     spdlog::info("  Nodes: {}", getNodeCount());
     spdlog::info("  Max Depth: {}", getMaxDepth());
     spdlog::info("  Sphere indices: {}", gpuSphereIndices.size());
+}
+
+std::unique_ptr<BVHNodeCPU> BVH::forceSplit(
+    const std::vector<SphereDataPacked>& spheres, std::vector<uint32_t>& indices, int depth) {
+
+    auto node = std::make_unique<BVHNodeCPU>();
+    node->sphereIndices = indices;
+    node->calculateAABB(spheres);
+
+    if (indices.size() == 1) {
+        node->isLeaf = true;
+        return node;
+    }
+
+    glm::vec3 extent = node->aabbMax - node->aabbMin;
+    int bestAxis = 0;
+    if (extent.y > extent.x)
+        bestAxis = 1;
+    if (extent.z > extent[bestAxis])
+        bestAxis = 2;
+
+    std::sort(indices.begin(), indices.end(), [&](uint32_t a, uint32_t b) {
+        glm::vec3 centerA = glm::vec3(spheres[a].centerAndRadius);
+        glm::vec3 centerB = glm::vec3(spheres[b].centerAndRadius);
+        return centerA[bestAxis] < centerB[bestAxis];
+    });
+
+    size_t splitIndex = indices.size() / 2;
+
+    std::vector<uint32_t> leftIndices(indices.begin(), indices.begin() + splitIndex);
+    std::vector<uint32_t> rightIndices(indices.begin() + splitIndex, indices.end());
+
+    node->leftChild = buildRecursive(spheres, leftIndices, depth + 1);
+    node->rightChild = buildRecursive(spheres, rightIndices, depth + 1);
+    node->isLeaf = false;
+
+    return node;
 }

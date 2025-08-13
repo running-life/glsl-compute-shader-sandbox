@@ -95,11 +95,11 @@ struct SplitInfo {
 
 class BVH {
 public:
-    static constexpr int MAX_LEAF_SIZE = 4;
+    static constexpr int MAX_LEAF_SIZE = 1;
     static constexpr int MAX_DEPTH = 20;
     static constexpr float TRAVERSAL_COST = 1.0f;
     static constexpr float INTERSECTION_COST = 1.0f;
-    static constexpr int SAH_BUCKETS = 8;
+    static constexpr int SAH_BUCKETS = 24;
 
 private:
     std::unique_ptr<BVHNodeCPU> root;
@@ -146,6 +146,9 @@ private:
 
     // convert a single node to GPU format
     size_t convertNodeToGPU(const BVHNodeCPU* node);
+
+    std::unique_ptr<BVHNodeCPU> forceSplit(
+        const std::vector<SphereDataPacked>& spheres, std::vector<uint32_t>& indices, int depth);
 };
 
 #endif // BVH_H
