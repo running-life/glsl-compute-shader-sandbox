@@ -151,4 +151,18 @@ private:
         const std::vector<SphereDataPacked>& spheres, std::vector<uint32_t>& indices, int depth);
 };
 
+class SpatialSorter {
+public:
+    static void sortSpheres(std::vector<SphereData>& spheres);
+    static void sortPackedSpheres(std::vector<SphereDataPacked>& packedSpheres);
+
+private:
+    static uint64_t mortonEncode3D(uint32_t x, uint32_t y, uint32_t z);
+    static uint32_t expandBits(uint32_t v);
+    static glm::vec3 calculateBounds(
+        const std::vector<SphereData>& spheres, glm::vec3& minBounds, glm::vec3& maxBounds);
+    static glm::vec3 calculateBoundsPacked(
+        const std::vector<SphereDataPacked>& spheres, glm::vec3& minBounds, glm::vec3& maxBounds);
+};
+
 #endif // BVH_H

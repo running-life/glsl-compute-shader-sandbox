@@ -479,19 +479,17 @@ private:
             spheres.push_back(sphere);
         }
 
+        // auto sortStart = std::chrono::high_resolution_clock::now();
+        // SpatialSorter::sortSpheres(spheres);
+        // auto sortEnd = std::chrono::high_resolution_clock::now();
+
+        // auto sortDuration = std::chrono::duration_cast<std::chrono::microseconds>(sortEnd - sortStart);
+        // spdlog::info("Spatial sorting completed in {} μs", sortDuration.count());
+
         packedSpheres.reserve(spheres.size());
         for (const auto& sphere : spheres) {
             packedSpheres.emplace_back(sphere);
         }
-
-        // Override the first sphere with specific values
-        // spheres[0].centerX = 0.0f;
-        // spheres[0].centerY = 0.0f;
-        // spheres[0].centerZ = -5.0f;
-        // spheres[0].radius = 1.0f;
-        // spheres[0].colorR = 1.0f;  // Red
-        // spheres[0].colorG = 0.0f;
-        // spheres[0].colorB = 0.0f;
     }
 
     void createSphereBuffer() {
