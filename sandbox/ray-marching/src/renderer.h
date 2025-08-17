@@ -12,6 +12,7 @@
 #include "gcss/texture.h"
 
 #include "bvh.h"
+#include "dynamic.h"
 
 using namespace gcss;
 
@@ -35,6 +36,10 @@ private:
     GLuint bvhBuffer = 0;
     GLuint sphereIndexBuffer = 0;
     bool useBVH = false;
+
+    dynamic_bvh::DBVH dbvh;
+    GLuint dbvhBuffer = 0;
+    bool useDBVH = false; // Dynamic BVH toggle
 
     // Multi-pass rendering textures
     Texture primaryTexture; // First pass output
@@ -66,6 +71,9 @@ private:
     ComputeShader rayMarchingBVHShader;
     Pipeline rayMarchingBVHPipeline;
 
+    ComputeShader rayMarchingDBVHShader;
+    Pipeline rayMarchingDBVHPipeline;
+
     ComputeShader rayMarchingHashShader;
     Pipeline rayMarchingHashPipeline;
 
@@ -89,6 +97,9 @@ public:
           rayMarchingBVHShader(
               std::filesystem::path(CMAKE_CURRENT_SOURCE_DIR) / "shaders"
               / "ray-marching-bvh-step.comp"),
+          rayMarchingDBVHShader(
+              std::filesystem::path(CMAKE_CURRENT_SOURCE_DIR) / "shaders"
+              / "ray-marching-dbvh-step.comp"),
           rayMarchingHashShader(
               std::filesystem::path(CMAKE_CURRENT_SOURCE_DIR) / "shaders"
               / "ray-marching-hash.comp"),
@@ -103,6 +114,7 @@ public:
         cullStatisticPipeline.attachComputeShader(cullStatisticShader);
 
         rayMarchingBVHPipeline.attachComputeShader(rayMarchingBVHShader);
+        rayMarchingDBVHPipeline.attachComputeShader(rayMarchingDBVHShader);
         rayMarchingHashPipeline.attachComputeShader(rayMarchingHashShader);
         rayMarchingBruteForcePipeline.attachComputeShader(rayMarchingBruteForceShader);
 
@@ -116,6 +128,7 @@ public:
         // create BVH buffer
         createBVHBuffer();
         buildBVH();
+        buildDBVH();
     }
 
     ~Renderer() {
@@ -166,6 +179,8 @@ public:
     void render() {
         if (useBVH) {
             rayMarchingBVH();
+        } else if (useDBVH) {
+            rayMarchingDBVH();
         } else if (useSpatialHash) {
             buildSpatialHash();
             rayMarchingHash();
@@ -205,6 +220,37 @@ private:
             (GLuint)std::ceil(resolution.x / 8.0f), (GLuint)std::ceil(resolution.y / 8.0f), 1);
         glPopDebugGroup();
         rayMarchingBVHPipeline.deactivate();
+
+        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+    }
+
+    void rayMarchingDBVH() {
+        primaryTexture.bindToImageUnit(0, GL_WRITE_ONLY);
+
+        if (sphereBuffer != 0) {
+            glBindBufferBase(GL_UNIFORM_BUFFER, 1, sphereBuffer);
+        }
+
+        if (dbvhBuffer != 0) {
+            glBindBufferBase(GL_UNIFORM_BUFFER, 2, dbvhBuffer);
+        }
+
+        rayMarchingDBVHShader.setUniform("cameraPosition", camera.camPos);
+        rayMarchingDBVHShader.setUniform("cameraFront", camera.camForward);
+        rayMarchingDBVHShader.setUniform("cameraUp", camera.camUp);
+        rayMarchingDBVHShader.setUniform("cameraRight", camera.camRight);
+        rayMarchingDBVHShader.setUniform("backgroundColor", backgroundColor);
+        rayMarchingDBVHShader.setUniform("aabbMin", aabbMin);
+        rayMarchingDBVHShader.setUniform("aabbMax", aabbMax);
+
+        rayMarchingDBVHShader.setUniform("stepSize", stepSize);
+
+        rayMarchingDBVHPipeline.activate();
+        glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, 2, -1, "Ray Marching DBVH");
+        glDispatchCompute(
+            (GLuint)std::ceil(resolution.x / 8.0f), (GLuint)std::ceil(resolution.y / 8.0f), 1);
+        glPopDebugGroup();
+        rayMarchingDBVHPipeline.deactivate();
 
         glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
     }
@@ -412,6 +458,98 @@ private:
         glBindBuffer(GL_UNIFORM_BUFFER, 0);
     }
 
+    void buildDBVH() {
+        // generate aabb
+        std::vector<dynamic_bvh::AABB> aabbs;
+        aabbs.reserve(packedSpheres.size());
+
+        for (auto& sphere : packedSpheres) {
+            aabbs.emplace_back(
+                sphere.centerAndRadius.x - sphere.centerAndRadius.w,
+                sphere.centerAndRadius.y - sphere.centerAndRadius.w,
+                sphere.centerAndRadius.z - sphere.centerAndRadius.w,
+                sphere.centerAndRadius.x + sphere.centerAndRadius.w,
+                sphere.centerAndRadius.y + sphere.centerAndRadius.w,
+                sphere.centerAndRadius.z + sphere.centerAndRadius.w);
+        }
+
+        for (int i = 0; i < aabbs.size(); ++i) {
+            auto index = dbvh.insert(aabbs[i]);
+            dbvh.setDataIndex(index, i);
+        }
+
+        // dbvh.rebuild();
+        dbvh.optimize();
+        auto gpuNodes = dbvh.serializeForGPU();
+
+        // const auto& nodes = bvh.getGPUNodes();
+        // // for test, convert gpu nodes to DBVH gpu nodes
+        // for (int i = 0; i < nodes.size(); ++i) {
+        //     auto& dbvhNode = gpuNodes[i];
+        //     auto& bvhNode = nodes[i];
+
+        //     dbvhNode.minX = bvhNode.aabbMin.x;
+        //     dbvhNode.minY = bvhNode.aabbMin.y;
+        //     dbvhNode.minZ = bvhNode.aabbMin.z;
+        //     dbvhNode.maxX = bvhNode.aabbMax.x;
+        //     dbvhNode.maxY = bvhNode.aabbMax.y;
+        //     dbvhNode.maxZ = bvhNode.aabbMax.z;
+        //     if (bvhNode.aabbMin.w < 0) {
+
+        //         dbvhNode.leftRight = (1 << 31) | (((int)-1 & 0xFFFF) << 16 | ((int)-1 & 0xFFFF));
+        //         dbvhNode.dataParent = bvhNode.data.w << 16 | (bvhNode.data.z & 0xFFFF);
+        //     } else {
+        //         dbvhNode.leftRight = (int)bvhNode.aabbMin.w << 16 | (int)bvhNode.aabbMax.w;
+        //         dbvhNode.dataParent = bvhNode.data.w << 16 | (bvhNode.data.z & 0xFFFF);
+        //     }
+        // }
+
+        // for test, convert dbvh nodes to gpu nodes
+        std::vector<BVHNodeGPU> nodes;
+        nodes.resize(gpuNodes.size());
+        for(int i = 0; i < gpuNodes.size(); ++i) {
+            auto& gpuNode = gpuNodes[i];
+            auto& node = nodes[i];
+
+            node.aabbMin = glm::vec4(
+                gpuNode.minX, gpuNode.minY, gpuNode.minZ, 0);
+            node.aabbMax = glm::vec4(
+                gpuNode.maxX, gpuNode.maxY, gpuNode.maxZ, 0);
+
+            // leaf node
+            if (gpuNode.leftRight < 0) {
+                node.aabbMin.w = -1.0f; // mark as leaf
+                node.aabbMax.w = 1.0f;
+                node.data.w = gpuNode.dataParent >> 16; // data index
+                node.data.z = gpuNode.dataParent & 0xFFFF; // sphere count
+            }
+            else {
+                node.aabbMin.w = gpuNode.leftRight >> 16; // left child index
+                node.aabbMax.w = gpuNode.leftRight & 0xFFFF; // right child index
+            }
+        }
+
+
+        // assume the spheres buffer is already created
+        const GLintptr dbvhDataOffset = 16;
+        glBindBuffer(GL_UNIFORM_BUFFER, dbvhBuffer);
+        glBufferData(
+            GL_UNIFORM_BUFFER, 16 + gpuNodes.size() * sizeof(BVHNodeGPU), nullptr,
+            GL_STATIC_DRAW);
+
+        int nodeCount = static_cast<int>(gpuNodes.size());
+        glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(int), &nodeCount);
+        // glBufferSubData(
+        //     GL_UNIFORM_BUFFER, dbvhDataOffset, gpuNodes.size() * sizeof(dynamic_bvh::BVHNodeGPU),
+        //     gpuNodes.data());
+
+        glBufferSubData(
+            GL_UNIFORM_BUFFER, dbvhDataOffset, gpuNodes.size() * sizeof(BVHNodeGPU),
+            nodes.data());
+        
+        glBindBuffer(GL_UNIFORM_BUFFER, 0);
+    }
+
     void renderPassDisplay() {
         // Clear and setup viewport
         glClear(GL_COLOR_BUFFER_BIT);
@@ -483,8 +621,8 @@ private:
         // SpatialSorter::sortSpheres(spheres);
         // auto sortEnd = std::chrono::high_resolution_clock::now();
 
-        // auto sortDuration = std::chrono::duration_cast<std::chrono::microseconds>(sortEnd - sortStart);
-        // spdlog::info("Spatial sorting completed in {} μs", sortDuration.count());
+        // auto sortDuration = std::chrono::duration_cast<std::chrono::microseconds>(sortEnd -
+        // sortStart); spdlog::info("Spatial sorting completed in {} μs", sortDuration.count());
 
         packedSpheres.reserve(spheres.size());
         for (const auto& sphere : spheres) {
@@ -569,6 +707,7 @@ private:
     void createBVHBuffer() {
         glGenBuffers(1, &bvhBuffer);
         glGenBuffers(1, &sphereIndexBuffer);
+        glGenBuffers(1, &dbvhBuffer);
     }
 
 private:
@@ -590,6 +729,14 @@ public:
 
     bool getUseBVH() const {
         return useBVH;
+    }
+
+    void setUseDBVH(bool use) {
+        useDBVH = use;
+    }
+
+    bool getUseDBVH() const {
+        return useDBVH;
     }
 
 public:

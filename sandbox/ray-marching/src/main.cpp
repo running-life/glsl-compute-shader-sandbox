@@ -153,6 +153,11 @@ int main() {
                 RENDERER->setBackgroundColor(background_color);
             }
 
+            static bool useDBVH = RENDERER->getUseDBVH();
+            if (ImGui::Checkbox("Use DBVH", &useDBVH)) {
+                RENDERER->setUseDBVH(useDBVH);
+            }
+
         }
         ImGui::End();
 

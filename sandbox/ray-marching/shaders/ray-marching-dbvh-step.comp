@@ -1,0 +1,213 @@
+#version 460 core
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(rgba32f, binding = 0) uniform image2D image;
+
+// Camera uniforms
+uniform vec3 cameraPosition;
+uniform vec3 cameraFront;
+uniform vec3 cameraUp;
+uniform vec3 cameraRight;
+uniform vec3 backgroundColor;
+
+// AABB for ray marching
+uniform vec3 aabbMin;
+uniform vec3 aabbMax;
+
+uniform float stepSize;
+
+// BVH node structure
+struct BVHNode {
+    vec3 aabbMin;
+    int leftRight;
+    vec3 aabbMax;   // packed: left in high 16 bits, right in low 16 bits
+    int dataParent; // packed: data in high 16 bits, parent in low 16 bits
+};
+
+struct Sphere {
+    vec4 centerAndRadius;
+    vec4 color;
+};
+
+// Buffers
+layout(std140, binding = 1) uniform SphereBuffer {
+    int numSpheres;
+    Sphere spheres[64];
+};
+
+// BVH buffers
+layout(std140, binding = 2) uniform BVHBuffer {
+    int nodeCount;
+    BVHNode nodes[150];
+};
+
+
+// Helper functions for BVH traversal
+// bool isLeafNode(BVHNode node) {
+//     return (node.leftRight >> 31) != 0;
+// }
+
+// int getLeftChildIndex(BVHNode node) {
+//     int left = (node.leftRight >> 16) & 0x7FFF; // Mask out the leaf flag
+//     // Check if this is NULL_INDEX (0xFFFF or 65535 when masked to 15 bits)
+//     return (left == 32767) ? -1 : left;
+// }
+
+// int getRightChildIndex(BVHNode node) {
+//     int right = node.leftRight & 0xFFFF;
+//     // Check if this is NULL_INDEX
+//     return (right == 65535) ? -1 : right;
+// }
+
+// int getDataIndex(BVHNode node) {
+//     return (node.dataParent >> 16) & 0xFFFF;
+// }
+
+// int getParentIndex(BVHNode node) {
+//     int parent = node.dataParent & 0xFFFF;
+//     // Check if this is NULL_INDEX
+//     return (parent == 65535) ? -1 : parent;
+// }
+
+// Ray-AABB intersection function
+bool rayAABBIntersection(vec3 rayOrigin, vec3 rayDir, vec3 boxMin, vec3 boxMax, out float tMin, out float tMax) {
+    vec3 invDir = 1.0 / rayDir;
+    vec3 t0 = (boxMin - rayOrigin) * invDir;
+    vec3 t1 = (boxMax - rayOrigin) * invDir;
+    
+    vec3 tMinVec = min(t0, t1);
+    vec3 tMaxVec = max(t0, t1);
+    
+    tMin = max(max(tMinVec.x, tMinVec.y), tMinVec.z);
+    tMax = min(min(tMaxVec.x, tMaxVec.y), tMaxVec.z);
+    
+    return tMax > tMin && tMax > 0.0;
+}
+
+// Point-in-AABB test
+bool isPointInAABB(vec3 point, vec3 aabbMin, vec3 aabbMax) {
+    return all(greaterThanEqual(point, aabbMin)) && all(lessThanEqual(point, aabbMax));
+}
+
+// Combined BVH traversal that both counts spheres and finds next intersection
+struct TraversalResult {
+    int sphereCount;     // Number of spheres at current point
+    float nextHitDist;   // Distance to next potential intersection
+};
+
+// leaf node noly has one sphere
+TraversalResult traverseBVH(vec3 samplePoint, vec3 rayOrigin, vec3 rayDir, float currentT, float maxT, inout int root) {
+    TraversalResult result;
+    result.sphereCount = 0;
+    result.nextHitDist = maxT - currentT; // Initialize to max distance
+
+    const int MAX_STACK_SIZE = 32;
+    int stack[MAX_STACK_SIZE];
+    int stackPtr = 0;
+
+    // Start with root node
+    stack[stackPtr++] = 0;
+    root = 0;
+
+    while (stackPtr > 0) {
+        int nodeIndex = stack[--stackPtr];
+        
+        if (nodeIndex < 0 || nodeIndex >= nodeCount) continue;
+
+        BVHNode node = nodes[nodeIndex];
+        
+        float tMin, tMax;
+        bool rayHitsNode = rayAABBIntersection(samplePoint, rayDir, node.aabbMin, node.aabbMax, tMin, tMax);
+
+        if (!rayHitsNode) {
+            continue;
+        }
+
+        // Check if sample point is inside this node (tMin < 0 means ray starts inside)
+        if (tMin <= 0.0 && tMax > 0.0) {
+            // Sample point is inside this node
+            if (node.leftRight >> 31 != 0) {
+                // Leaf node - check spheres
+                int sphereIndex = (node.dataParent >> 16) & 0xFFFF;
+                vec3 sphereCenter = spheres[sphereIndex].centerAndRadius.xyz;
+                float sphereRadius = spheres[sphereIndex].centerAndRadius.w;
+
+                if (distance(samplePoint, sphereCenter) <= sphereRadius) {
+                    result.sphereCount++;
+                }
+                result.nextHitDist = stepSize;
+            } else {
+                // Internal node - add children to stack
+                int leftChild = node.leftRight >> 16 & 0x7FFF;
+                int rightChild = node.leftRight & 0xFFFF;
+
+                if (stackPtr < MAX_STACK_SIZE - 2) {
+                    if (rightChild < nodeCount) stack[stackPtr++] = rightChild;
+                    if (leftChild < nodeCount) stack[stackPtr++] = leftChild;
+                }
+            }
+        } else if (tMin > 0.0) {
+            // Sample point is outside this node, ray will hit it at tMin
+            result.nextHitDist = min(result.nextHitDist, tMin);
+            // result.nextHitDist = stepSize;
+        }
+    }
+    
+    return result;
+}
+
+void main() {
+    ivec2 gidx = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(image);
+    
+    // Convert pixel coordinates to normalized device coordinates
+    vec2 ndc = (2.0 * vec2(gidx) - vec2(size)) / float(size.y);
+    
+    // Create ray from camera
+    float fov = radians(45.0);
+    float aspect = float(size.x) / float(size.y);
+    vec3 rayDirection = normalize(
+        cameraFront + 
+        tan(fov * 0.5) * (ndc.x * aspect * cameraRight + ndc.y * cameraUp)
+    );
+    
+    // Default background color
+    vec3 finalColor = backgroundColor;
+
+    float tMin, tMax;
+    if (rayAABBIntersection(cameraPosition, rayDirection, aabbMin, aabbMax, tMin, tMax)) {
+        // Ray marching parameters
+        float t = max(tMin, 0.0);  // Start at entry point or camera if inside
+        
+        // Color accumulation
+        float density = 0.0;
+        float maxDensity = 70.0; // For normalization
+        int root = 0;
+        
+        while (t < tMax) {
+            vec3 samplePoint = cameraPosition + t * rayDirection;
+            TraversalResult traversalResult = traverseBVH(samplePoint, cameraPosition, rayDirection, t, tMax, root);
+            density += float(traversalResult.sphereCount);
+
+            t += max(traversalResult.nextHitDist, stepSize);
+        }
+        
+        // Normalize density and map to color
+        float normalizedDensity = min(density / maxDensity, 1.0);
+        
+        // Simple color gradient based on density
+        if (normalizedDensity > 0.0) {
+            // Cool to warm color map
+            vec3 coolColor = vec3(0.0, 0.0, 0.6);  // Deep blue
+            vec3 warmColor = vec3(1.0, 0.4, 0.0);  // Orange
+            
+            finalColor = mix(coolColor, warmColor, normalizedDensity);
+            
+            // Add brightness based on density
+            float brightness = 0.5 + 0.5 * normalizedDensity;
+            finalColor *= brightness;
+        }
+    }
+    
+    imageStore(image, gidx, vec4(finalColor, 1.0));
+}

@@ -159,7 +159,7 @@ TraversalResult traverseBVH2(vec3 samplePoint, vec3 rayOrigin, vec3 rayDir, floa
     int stackPtr = 0;
 
     // Start with root node
-    stack[stackPtr++] = root;
+    stack[stackPtr++] = 0;
     root = 0;
 
     while (stackPtr > 0) {
@@ -369,8 +369,8 @@ void main() {
             vec3 samplePoint = cameraPosition + t * rayDirection;
             // TraversalResult traversalResult = traverseBVHOrigin(samplePoint, cameraPosition, rayDirection, t, tMax);
             // TraversalResult traversalResult = traverseBVH(samplePoint, cameraPosition, rayDirection, t, tMax);
-            TraversalResult traversalResult = traverseBVH2(samplePoint, cameraPosition, rayDirection, t, tMax, root);
-            // TraversalResult traversalResult = traverseBVH3(samplePoint, cameraPosition, rayDirection, t, tMax, root);
+            // TraversalResult traversalResult = traverseBVH2(samplePoint, cameraPosition, rayDirection, t, tMax, root);
+            TraversalResult traversalResult = traverseBVH3(samplePoint, cameraPosition, rayDirection, t, tMax, root);
             density += float(traversalResult.sphereCount);
 
             t += max(traversalResult.nextHitDist, stepSize);
