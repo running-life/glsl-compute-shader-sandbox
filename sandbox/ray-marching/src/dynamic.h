@@ -1,7 +1,5 @@
 #pragma once
 
-#include <spdlog/spdlog.h>
-
 #include <algorithm>
 #include <limits>
 #include <numeric>
@@ -317,11 +315,11 @@ private:
         std::vector<Index> indices(aabbs.size());
         std::iota(indices.begin(), indices.end(), 0);
 
-        return buildRecursiveTopDownImpl(indices, aabbs, leafIndices, depth);
+        return buildRecursiveTopDownImpl(indices, 0, aabbs.size(), aabbs, leafIndices, depth);
     }
 
     Index buildRecursiveTopDownImpl(
-        std::vector<Index>& indices, const std::vector<AABB>& aabbs,
+        std::vector<Index>& indices, size_t start, size_t end, const std::vector<AABB>& aabbs,
         std::vector<Index>& leafIndices, int depth) {
 
         // Allocate a new node
@@ -332,58 +330,52 @@ private:
         BVHNodeCPU& node = m_nodes[nodeIndex];
 
         // Calculate AABB for this node
-        for (Index idx : indices) {
-            node.bounds.expand(aabbs[idx]);
+        for (size_t idx = start; idx < end; ++idx) {
+            node.bounds.expand(aabbs[indices[idx]]);
         }
 
         // If only one primitive, create leaf node
-        if (indices.size() == 1) {
+        if (end - start == 1) {
             node.isLeaf = true;
-            // node.dataIndex = dataIndices[indices[0]];
-            node.dataIndex = indices[0];
-            leafIndices[indices[0]] = nodeIndex;
-            // print depth
-            // static int num = 1;
-            // spdlog::info(
-            //     "Leaf node at depth {}: dataIndex = {} num = {}", depth, node.dataIndex, num++);
+            node.dataIndex = indices[start];
+            leafIndices[indices[start]] = nodeIndex;
             return nodeIndex;
         }
 
         // Use SAH to find best split
-        SplitCandidate bestSplit = findBestSplitSAH(indices, aabbs, node.bounds);
+        SplitCandidate bestSplit = findBestSplitSAH(indices, start, end, aabbs, node.bounds);
 
         // If no good split found, use simple split
-        if (!bestSplit.isValid()) {
-            return buildSimpleSplit(indices, aabbs, leafIndices, depth, nodeIndex);
+        if (!bestSplit.isValid() || end - start <= 4) {
+            return buildSimpleSplit(indices, start, end, aabbs, leafIndices, depth, nodeIndex);
         }
 
         // Partition based on SAH split
-        auto partitionPoint = std::partition(indices.begin(), indices.end(), [&](Index idx) {
-            const AABB& aabb = aabbs[idx];
-            float center;
-            switch (bestSplit.axis) {
-            case 0: center = (aabb.minX + aabb.maxX) * 0.5f; break;
-            case 1: center = (aabb.minY + aabb.maxY) * 0.5f; break;
-            case 2: center = (aabb.minZ + aabb.maxZ) * 0.5f; break;
-            default: center = 0.0f;
-            }
-            return center < bestSplit.position;
-        });
+        auto partitionPoint =
+            std::partition(indices.begin() + start, indices.begin() + end, [&](Index idx) {
+                const AABB& aabb = aabbs[idx];
+                float center;
+                switch (bestSplit.axis) {
+                case 0: center = (aabb.minX + aabb.maxX) * 0.5f; break;
+                case 1: center = (aabb.minY + aabb.maxY) * 0.5f; break;
+                case 2: center = (aabb.minZ + aabb.maxZ) * 0.5f; break;
+                default: center = 0.0f;
+                }
+                return center < bestSplit.position;
+            });
 
         size_t splitIndex = partitionPoint - indices.begin();
 
         // Ensure we have valid splits
-        if (splitIndex == 0 || splitIndex == indices.size()) {
-            return buildSimpleSplit(indices, aabbs, leafIndices, depth, nodeIndex);
+        if (splitIndex == start || splitIndex == end) {
+            return buildSimpleSplit(indices, start, end, aabbs, leafIndices, depth, nodeIndex);
         }
 
-        // Create left and right index arrays
-        std::vector<Index> leftIndices(indices.begin(), indices.begin() + splitIndex);
-        std::vector<Index> rightIndices(indices.begin() + splitIndex, indices.end());
-
         // Build children recursively
-        Index leftChild = buildRecursiveTopDownImpl(leftIndices, aabbs, leafIndices, depth + 1);
-        Index rightChild = buildRecursiveTopDownImpl(rightIndices, aabbs, leafIndices, depth + 1);
+        Index leftChild =
+            buildRecursiveTopDownImpl(indices, start, splitIndex, aabbs, leafIndices, depth + 1);
+        Index rightChild =
+            buildRecursiveTopDownImpl(indices, splitIndex, end, aabbs, leafIndices, depth + 1);
 
         // Connect children to parent
         node.isLeaf = false;
@@ -413,7 +405,7 @@ private:
 
     // SAH-based split finding
     SplitCandidate findBestSplitSAH(
-        const std::vector<Index>& indices, const std::vector<AABB>& aabbs,
+        const std::vector<Index>& indices, size_t start, size_t end, const std::vector<AABB>& aabbs,
         const AABB& parentBounds) {
         static constexpr int SAH_BUCKETS = 12;
 
@@ -455,11 +447,11 @@ private:
                 AABB bounds;
             };
 
-            std::vector<Bucket> buckets(SAH_BUCKETS);
+            Bucket buckets[SAH_BUCKETS] = {};
 
             // Distribute AABBs into buckets
-            for (Index idx : indices) {
-                const AABB& aabb = aabbs[idx];
+            for (size_t idx = start; idx < end; ++idx) {
+                const AABB& aabb = aabbs[indices[idx]];
                 float center = 0.0f;
                 switch (axis) {
                 case 0: center = (aabb.minX + aabb.maxX) * 0.5f; break;
@@ -519,7 +511,7 @@ private:
 
     // Fallback simple split method
     Index buildSimpleSplit(
-        std::vector<Index>& indices, const std::vector<AABB>& aabbs,
+        std::vector<Index>& indices, size_t start, size_t end, const std::vector<AABB>& aabbs,
         std::vector<Index>& leafIndices, int depth, Index nodeIndex) {
         BVHNodeCPU& node = m_nodes[nodeIndex];
 
@@ -545,19 +537,17 @@ private:
             }
         };
 
-        std::vector<Index> sortedIndices = indices;
-        std::sort(sortedIndices.begin(), sortedIndices.end(), [&](Index a, Index b) {
+        std::sort(indices.begin() + start, indices.begin() + end, [&](Index a, Index b) {
             return centerOf(a, bestAxis) < centerOf(b, bestAxis);
         });
 
-        // Split at the median
-        size_t median = sortedIndices.size() / 2;
-        std::vector<Index> leftIndices(sortedIndices.begin(), sortedIndices.begin() + median);
-        std::vector<Index> rightIndices(sortedIndices.begin() + median, sortedIndices.end());
+        size_t median = start + (end - start) / 2;
 
         // Build children recursively
-        Index leftChild = buildRecursiveTopDownImpl(leftIndices, aabbs, leafIndices, depth + 1);
-        Index rightChild = buildRecursiveTopDownImpl(rightIndices, aabbs, leafIndices, depth + 1);
+        Index leftChild =
+            buildRecursiveTopDownImpl(indices, start, median, aabbs, leafIndices, depth + 1);
+        Index rightChild =
+            buildRecursiveTopDownImpl(indices, median, end, aabbs, leafIndices, depth + 1);
 
         // Connect children to parent
         node.isLeaf = false;
