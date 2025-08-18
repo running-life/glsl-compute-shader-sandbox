@@ -128,7 +128,7 @@ void main() {
     
     // Default background color
     vec3 finalColor = backgroundColor;
-    
+        
     float tMin, tMax;
     if (rayAABBIntersection(cameraPosition, rayDirection, aabbMin, aabbMax, tMin, tMax)) {
         // Ray marching parameters
@@ -136,7 +136,7 @@ void main() {
         
         // Collect candidate spheres that might intersect with the ray
         CandidateSet candidates = collectCandidateSpheres(cameraPosition, rayDirection, t, tMax);
-        
+
         // Color accumulation
         float density = 0.0;
         float maxDensity = 70.0; // For normalization

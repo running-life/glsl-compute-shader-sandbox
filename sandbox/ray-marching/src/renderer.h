@@ -99,7 +99,7 @@ public:
               / "ray-marching-bvh-step.comp"),
           rayMarchingDBVHShader(
               std::filesystem::path(CMAKE_CURRENT_SOURCE_DIR) / "shaders"
-              / "ray-marching-dbvh-step.comp"),
+              / "ray-marching-bvh-once-opt.comp"),
           rayMarchingHashShader(
               std::filesystem::path(CMAKE_CURRENT_SOURCE_DIR) / "shaders"
               / "ray-marching-hash.comp"),

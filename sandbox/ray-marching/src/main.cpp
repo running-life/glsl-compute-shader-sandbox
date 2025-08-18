@@ -15,7 +15,7 @@
 
 Renderer* RENDERER;
 
-const glm::uint windowWidth = 810;
+const glm::uint windowWidth = 960;
 const glm::uint windowHeight = 540;
 
 static void glfwErrorCallback(int error, const char* description) {
@@ -148,14 +148,14 @@ int main() {
                 RENDERER->setUseBVH(useBVH);
             }
 
-            static glm::vec3 background_color = RENDERER->getBackgroundColor();
-            if (ImGui::ColorPicker3("Background Color", glm::value_ptr(background_color))) {
-                RENDERER->setBackgroundColor(background_color);
-            }
-
             static bool useDBVH = RENDERER->getUseDBVH();
             if (ImGui::Checkbox("Use DBVH", &useDBVH)) {
                 RENDERER->setUseDBVH(useDBVH);
+            }
+
+            static glm::vec3 background_color = RENDERER->getBackgroundColor();
+            if (ImGui::ColorPicker3("Background Color", glm::value_ptr(background_color))) {
+                RENDERER->setBackgroundColor(background_color);
             }
 
         }
