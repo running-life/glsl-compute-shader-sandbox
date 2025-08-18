@@ -257,7 +257,6 @@ public:
         return oldToNewLUT;
     }
 
-
     std::vector<BVHNodeGPU> serializeForGPU() const {
         std::vector<BVHNodeGPU> gpuNodes(m_nodes.size());
 
@@ -293,10 +292,14 @@ public:
             return {};
         }
 
-        // Step 1: Collect all leaf nodes and their data
-        std::vector<Index> leafIndices;
-        std::vector<AABB> leafAABBs;
-        std::vector<Index> leafDataIndices;
+        // Step 1: Collect all leaf nodes and their data with original indices
+        struct LeafData {
+            Index originalIndex;
+            AABB bounds;
+            Index dataIndex;
+        };
+
+        std::vector<LeafData> leafNodes;
 
         // Find all leaf nodes using depth-first traversal
         std::stack<Index> nodeStack;
@@ -309,9 +312,7 @@ public:
             const BVHNodeCPU& node = m_nodes[currIndex];
 
             if (node.isLeaf) {
-                leafIndices.push_back(currIndex);
-                leafAABBs.push_back(node.bounds);
-                leafDataIndices.push_back(node.dataIndex);
+                leafNodes.push_back({currIndex, node.bounds, node.dataIndex});
             } else {
                 if (node.right != NULL_INDEX)
                     nodeStack.push(node.right);
@@ -320,31 +321,63 @@ public:
             }
         }
 
-        // Create mapping from old to new indices
-        std::vector<Index> oldToNewMapping(m_nodes.size(), NULL_INDEX);
+        // Step 2: Save the original node data
+        std::vector<BVHNodeCPU> originalNodes = m_nodes;
 
-        // Reset the BVH structure but preserve the nodes array
-        Index oldRootIndex = m_rootIndex;
+        // Step 3: Reset the BVH structure
         m_rootIndex = NULL_INDEX;
         m_freeNodes.clear();
         for (size_t i = 0; i < m_nodes.size(); ++i) {
+            m_nodes[i].reset();
             m_freeNodes.push_back(static_cast<Index>(i));
         }
         std::reverse(m_freeNodes.begin(), m_freeNodes.end());
 
-        // If we have leaf nodes, build a new tree
-        if (!leafIndices.empty()) {
+        // Step 4: Rebuild the tree with collected leaf data
+        std::vector<Index> oldToNewMapping(m_nodes.size(), NULL_INDEX);
+
+        if (!leafNodes.empty()) {
+            // Extract data for rebuilding
+            std::vector<AABB> leafAABBs;
+            std::vector<Index> leafDataIndices;
+            leafAABBs.reserve(leafNodes.size());
+            leafDataIndices.reserve(leafNodes.size());
+
+            for (const auto& leaf : leafNodes) {
+                leafAABBs.push_back(leaf.bounds);
+                leafDataIndices.push_back(leaf.dataIndex);
+            }
+
+            // Build new tree
             m_rootIndex = buildRecursiveTopDown(leafAABBs, leafDataIndices);
 
-            // Create mapping from old to new indices
-            for (size_t i = 0; i < m_nodes.size(); ++i) {
-                if (m_nodes[i].isLeaf) {
-                    for (size_t j = 0; j < leafIndices.size(); ++j) {
-                        if (m_nodes[i].dataIndex == leafDataIndices[j]) {
-                            oldToNewMapping[leafIndices[j]] = i;
-                            break;
-                        }
+            // Step 5: Create mapping by traversing the new tree and matching dataIndex
+            std::vector<Index> newLeafIndices;
+            collectAllLeafIndices(m_rootIndex, newLeafIndices);
+
+            // Create mapping based on dataIndex matching
+            // For better handling of duplicate dataIndex cases, we use stable matching
+            for (size_t i = 0; i < leafNodes.size(); ++i) {
+                Index oldIndex = leafNodes[i].originalIndex;
+                Index oldDataIndex = leafNodes[i].dataIndex;
+
+                // Find the corresponding new leaf node with the same dataIndex
+                bool found = false;
+                for (auto it = newLeafIndices.begin(); it != newLeafIndices.end(); ++it) {
+                    Index newIndex = *it;
+                    if (m_nodes[newIndex].dataIndex == oldDataIndex) {
+                        oldToNewMapping[oldIndex] = newIndex;
+                        newLeafIndices.erase(it); // Remove to avoid duplicate matching
+                        found = true;
+                        break;
                     }
+                }
+
+                // This shouldn't happen if rebuild is correct, but just in case
+                if (!found) {
+                    spdlog::warn(
+                        "rebuild(): Failed to find mapping for old index {} with dataIndex {}",
+                        oldIndex, oldDataIndex);
                 }
             }
         }
@@ -386,9 +419,197 @@ private:
             node.dataIndex = dataIndices[indices[0]];
             // print depth
             static int num = 1;
-            spdlog::info("Leaf node at depth {}: dataIndex = {} num = {}", depth, node.dataIndex, num++);
+            spdlog::info(
+                "Leaf node at depth {}: dataIndex = {} num = {}", depth, node.dataIndex, num++);
             return nodeIndex;
         }
+
+        // Use SAH to find best split
+        SplitCandidate bestSplit = findBestSplitSAH(indices, aabbs, node.bounds);
+
+        // If no good split found, use simple split
+        if (!bestSplit.isValid()) {
+            return buildSimpleSplit(indices, aabbs, dataIndices, depth, nodeIndex);
+        }
+
+        // Calculate leaf cost
+        float leafCost = static_cast<float>(indices.size()); // Simplified intersection cost
+
+        // If split is not beneficial, create leaf
+        if (bestSplit.cost >= leafCost && depth < 20) { // Allow some depth flexibility
+            return buildSimpleSplit(indices, aabbs, dataIndices, depth, nodeIndex);
+        }
+
+        // Partition based on SAH split
+        auto partitionPoint = std::partition(
+            const_cast<std::vector<Index>&>(indices).begin(),
+            const_cast<std::vector<Index>&>(indices).end(), [&](Index idx) {
+                const AABB& aabb = aabbs[idx];
+                float center;
+                switch (bestSplit.axis) {
+                case 0: center = (aabb.minX + aabb.maxX) * 0.5f; break;
+                case 1: center = (aabb.minY + aabb.maxY) * 0.5f; break;
+                case 2: center = (aabb.minZ + aabb.maxZ) * 0.5f; break;
+                default: center = 0.0f;
+                }
+                return center < bestSplit.position;
+            });
+
+        size_t splitIndex = partitionPoint - indices.begin();
+
+        // Ensure we have valid splits
+        if (splitIndex == 0 || splitIndex == indices.size()) {
+            return buildSimpleSplit(indices, aabbs, dataIndices, depth, nodeIndex);
+        }
+
+        // Create left and right index arrays
+        std::vector<Index> leftIndices(indices.begin(), indices.begin() + splitIndex);
+        std::vector<Index> rightIndices(indices.begin() + splitIndex, indices.end());
+
+        // Build children recursively
+        Index leftChild = buildRecursiveTopDownImpl(leftIndices, aabbs, dataIndices, depth + 1);
+        Index rightChild = buildRecursiveTopDownImpl(rightIndices, aabbs, dataIndices, depth + 1);
+
+        // Connect children to parent
+        node.isLeaf = false;
+        node.left = leftChild;
+        node.right = rightChild;
+
+        if (leftChild != NULL_INDEX)
+            m_nodes[leftChild].parent = nodeIndex;
+        if (rightChild != NULL_INDEX)
+            m_nodes[rightChild].parent = nodeIndex;
+
+        return nodeIndex;
+    }
+
+    // SAH split evaluation structure
+    struct SplitCandidate {
+        int axis = -1;
+        float position = 0.0f;
+        float cost = std::numeric_limits<float>::max();
+        size_t leftCount = 0;
+        size_t rightCount = 0;
+
+        bool isValid() const {
+            return axis != -1 && cost < std::numeric_limits<float>::max();
+        }
+    };
+
+    // SAH-based split finding
+    SplitCandidate findBestSplitSAH(
+        const std::vector<Index>& indices, const std::vector<AABB>& aabbs,
+        const AABB& parentBounds) {
+        static constexpr int SAH_BUCKETS = 24;
+        static constexpr float TRAVERSAL_COST = 1.0f;
+        static constexpr float INTERSECTION_COST = 1.0f;
+
+        SplitCandidate bestSplit;
+
+        float parentSA = parentBounds.surfaceArea();
+        if (parentSA <= 0.0f)
+            return bestSplit;
+
+        // Test each axis
+        for (int axis = 0; axis < 3; ++axis) {
+            float extent;
+            float minVal, maxVal;
+
+            switch (axis) {
+            case 0:
+                extent = parentBounds.maxX - parentBounds.minX;
+                minVal = parentBounds.minX;
+                maxVal = parentBounds.maxX;
+                break;
+            case 1:
+                extent = parentBounds.maxY - parentBounds.minY;
+                minVal = parentBounds.minY;
+                maxVal = parentBounds.maxY;
+                break;
+            case 2:
+                extent = parentBounds.maxZ - parentBounds.minZ;
+                minVal = parentBounds.minZ;
+                maxVal = parentBounds.maxZ;
+                break;
+            }
+
+            if (extent < 1e-6f)
+                continue;
+
+            // Create buckets
+            struct Bucket {
+                size_t count = 0;
+                AABB bounds;
+            };
+
+            std::vector<Bucket> buckets(SAH_BUCKETS);
+
+            // Distribute AABBs into buckets
+            for (Index idx : indices) {
+                const AABB& aabb = aabbs[idx];
+                float center;
+                switch (axis) {
+                case 0: center = (aabb.minX + aabb.maxX) * 0.5f; break;
+                case 1: center = (aabb.minY + aabb.maxY) * 0.5f; break;
+                case 2: center = (aabb.minZ + aabb.maxZ) * 0.5f; break;
+                }
+
+                int bucketIdx = static_cast<int>(SAH_BUCKETS * (center - minVal) / extent);
+                bucketIdx = std::clamp(bucketIdx, 0, SAH_BUCKETS - 1);
+
+                buckets[bucketIdx].count++;
+                buckets[bucketIdx].bounds.expand(aabb);
+            }
+
+            // Evaluate each split position
+            for (int i = 0; i < SAH_BUCKETS - 1; ++i) {
+                // Calculate left side
+                size_t leftCount = 0;
+                AABB leftBounds;
+                for (int j = 0; j <= i; ++j) {
+                    if (buckets[j].count > 0) {
+                        leftCount += buckets[j].count;
+                        leftBounds.expand(buckets[j].bounds);
+                    }
+                }
+
+                // Calculate right side
+                size_t rightCount = 0;
+                AABB rightBounds;
+                for (int j = i + 1; j < SAH_BUCKETS; ++j) {
+                    if (buckets[j].count > 0) {
+                        rightCount += buckets[j].count;
+                        rightBounds.expand(buckets[j].bounds);
+                    }
+                }
+
+                if (leftCount == 0 || rightCount == 0)
+                    continue;
+
+                // Calculate SAH cost
+                float leftSA = leftBounds.surfaceArea();
+                float rightSA = rightBounds.surfaceArea();
+                float cost = TRAVERSAL_COST + (leftSA / parentSA) * leftCount * INTERSECTION_COST
+                             + (rightSA / parentSA) * rightCount * INTERSECTION_COST;
+
+                if (cost < bestSplit.cost) {
+                    bestSplit.cost = cost;
+                    bestSplit.axis = axis;
+                    bestSplit.position = minVal + extent * (float(i + 1) / SAH_BUCKETS);
+                    bestSplit.leftCount = leftCount;
+                    bestSplit.rightCount = rightCount;
+                }
+            }
+        }
+
+        return bestSplit;
+    }
+
+    // Fallback simple split method
+    Index buildSimpleSplit(
+        const std::vector<Index>& indices, const std::vector<AABB>& aabbs,
+        const std::vector<Index>& dataIndices, int depth, Index nodeIndex) {
+        BVHNodeCPU& node = m_nodes[nodeIndex];
 
         // Find axis with largest extent
         float extentX = node.bounds.maxX - node.bounds.minX;
@@ -402,7 +623,7 @@ private:
             bestAxis = 2;
 
         // Sort indices based on centers along the best axis
-        auto centerOf = [&](Index idx, int axis) {
+        auto centerOf = [&aabbs](Index idx, int axis) {
             const AABB& aabb = aabbs[idx];
             switch (axis) {
             case 0: return (aabb.minX + aabb.maxX) * 0.5f;
@@ -509,6 +730,21 @@ private:
         return bestSibling;
     }
 
+    void collectAllLeafIndices(Index nodeIndex, std::vector<Index>& leafIndices) {
+        if (nodeIndex == NULL_INDEX) {
+            return;
+        }
+
+        const BVHNodeCPU& node = m_nodes[nodeIndex];
+        if (node.isLeaf) {
+            leafIndices.push_back(nodeIndex);
+        } else {
+            collectAllLeafIndices(node.left, leafIndices);
+            collectAllLeafIndices(node.right, leafIndices);
+        }
+    }
+
+private:
     struct OptimizeHelper {
         Index oldIndex = NULL_INDEX;
         Index order = 1000; // a large value
