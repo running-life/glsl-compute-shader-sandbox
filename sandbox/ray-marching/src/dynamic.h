@@ -286,107 +286,8 @@ public:
         return gpuNodes;
     }
 
-    std::vector<unsigned int> rebuild() {
-        // If tree is empty, nothing to rebuild
-        if (m_rootIndex == NULL_INDEX) {
-            return {};
-        }
-
-        // Step 1: Collect all leaf nodes and their data with original indices
-        struct LeafData {
-            Index originalIndex;
-            AABB bounds;
-            Index dataIndex;
-        };
-
-        std::vector<LeafData> leafNodes;
-
-        // Find all leaf nodes using depth-first traversal
-        std::stack<Index> nodeStack;
-        nodeStack.push(m_rootIndex);
-
-        while (!nodeStack.empty()) {
-            Index currIndex = nodeStack.top();
-            nodeStack.pop();
-
-            const BVHNodeCPU& node = m_nodes[currIndex];
-
-            if (node.isLeaf) {
-                leafNodes.push_back({currIndex, node.bounds, node.dataIndex});
-            } else {
-                if (node.right != NULL_INDEX)
-                    nodeStack.push(node.right);
-                if (node.left != NULL_INDEX)
-                    nodeStack.push(node.left);
-            }
-        }
-
-        // Step 2: Save the original node data
-        std::vector<BVHNodeCPU> originalNodes = m_nodes;
-
-        // Step 3: Reset the BVH structure
-        m_rootIndex = NULL_INDEX;
-        m_freeNodes.clear();
-        for (size_t i = 0; i < m_nodes.size(); ++i) {
-            m_nodes[i].reset();
-            m_freeNodes.push_back(static_cast<Index>(i));
-        }
-        std::reverse(m_freeNodes.begin(), m_freeNodes.end());
-
-        // Step 4: Rebuild the tree with collected leaf data
-        std::vector<Index> oldToNewMapping(m_nodes.size(), NULL_INDEX);
-
-        if (!leafNodes.empty()) {
-            // Extract data for rebuilding
-            std::vector<AABB> leafAABBs;
-            std::vector<Index> leafDataIndices;
-            leafAABBs.reserve(leafNodes.size());
-            leafDataIndices.reserve(leafNodes.size());
-
-            for (const auto& leaf : leafNodes) {
-                leafAABBs.push_back(leaf.bounds);
-                leafDataIndices.push_back(leaf.dataIndex);
-            }
-
-            // Build new tree
-            m_rootIndex = buildRecursiveTopDown(leafAABBs, leafDataIndices);
-
-            // Step 5: Create mapping by traversing the new tree and matching dataIndex
-            std::vector<Index> newLeafIndices;
-            collectAllLeafIndices(m_rootIndex, newLeafIndices);
-
-            // Create mapping based on dataIndex matching
-            // For better handling of duplicate dataIndex cases, we use stable matching
-            for (size_t i = 0; i < leafNodes.size(); ++i) {
-                Index oldIndex = leafNodes[i].originalIndex;
-                Index oldDataIndex = leafNodes[i].dataIndex;
-
-                // Find the corresponding new leaf node with the same dataIndex
-                bool found = false;
-                for (auto it = newLeafIndices.begin(); it != newLeafIndices.end(); ++it) {
-                    Index newIndex = *it;
-                    if (m_nodes[newIndex].dataIndex == oldDataIndex) {
-                        oldToNewMapping[oldIndex] = newIndex;
-                        newLeafIndices.erase(it); // Remove to avoid duplicate matching
-                        found = true;
-                        break;
-                    }
-                }
-
-                // This shouldn't happen if rebuild is correct, but just in case
-                if (!found) {
-                    spdlog::warn(
-                        "rebuild(): Failed to find mapping for old index {} with dataIndex {}",
-                        oldIndex, oldDataIndex);
-                }
-            }
-        }
-
-        return oldToNewMapping;
-    }
-
     std::vector<unsigned int> rebuild(const std::vector<AABB>& aabbs) {
-        // Step 1: Reset the BVH structure
+        // Reset the BVH structure
         m_rootIndex = NULL_INDEX;
         m_freeNodes.clear();
         for (size_t i = 0; i < m_nodes.size(); ++i) {
@@ -395,42 +296,33 @@ public:
         }
         std::reverse(m_freeNodes.begin(), m_freeNodes.end());
 
-        // Step 2: If no AABBs provided, return empty vector
+        // If no AABBs provided, return empty vector
         if (aabbs.empty()) {
             return {};
         }
 
-        // Step 3: Create data indices for each AABB
-        std::vector<Index> dataIndices(aabbs.size());
-        std::iota(dataIndices.begin(), dataIndices.end(), 0);
+        std::vector<Index> leafIndices(aabbs.size(), NULL_INDEX);
 
-        // Step 4: Build new tree using the provided AABBs
-        m_rootIndex = buildRecursiveTopDown(aabbs, dataIndices);
-
-        // Step 5: Collect all leaf node indices
-        std::vector<Index> leafIndices;
-        if (m_rootIndex != NULL_INDEX) {
-            collectAllLeafIndices(m_rootIndex, leafIndices);
-        }
-
+        // Build new tree using the provided AABBs
+        m_rootIndex = buildRecursiveTopDown(aabbs, leafIndices);
         return leafIndices;
     }
 
 private:
     // Helper method for top-down BVH construction
     Index buildRecursiveTopDown(
-        const std::vector<AABB>& aabbs, const std::vector<Index>& dataIndices, int depth = 0) {
+        const std::vector<AABB>& aabbs, std::vector<Index>& leafIndices, int depth = 0) {
 
         // Create indices array
         std::vector<Index> indices(aabbs.size());
         std::iota(indices.begin(), indices.end(), 0);
 
-        return buildRecursiveTopDownImpl(indices, aabbs, dataIndices, depth);
+        return buildRecursiveTopDownImpl(indices, aabbs, leafIndices, depth);
     }
 
     Index buildRecursiveTopDownImpl(
-        const std::vector<Index>& indices, const std::vector<AABB>& aabbs,
-        const std::vector<Index>& dataIndices, int depth) {
+        std::vector<Index>& indices, const std::vector<AABB>& aabbs,
+        std::vector<Index>& leafIndices, int depth) {
 
         // Allocate a new node
         Index nodeIndex = allocateNode();
@@ -447,11 +339,13 @@ private:
         // If only one primitive, create leaf node
         if (indices.size() == 1) {
             node.isLeaf = true;
-            node.dataIndex = dataIndices[indices[0]];
+            // node.dataIndex = dataIndices[indices[0]];
+            node.dataIndex = indices[0];
+            leafIndices[indices[0]] = nodeIndex;
             // print depth
-            static int num = 1;
-            spdlog::info(
-                "Leaf node at depth {}: dataIndex = {} num = {}", depth, node.dataIndex, num++);
+            // static int num = 1;
+            // spdlog::info(
+            //     "Leaf node at depth {}: dataIndex = {} num = {}", depth, node.dataIndex, num++);
             return nodeIndex;
         }
 
@@ -460,37 +354,27 @@ private:
 
         // If no good split found, use simple split
         if (!bestSplit.isValid()) {
-            return buildSimpleSplit(indices, aabbs, dataIndices, depth, nodeIndex);
-        }
-
-        // Calculate leaf cost
-        float leafCost = static_cast<float>(indices.size()); // Simplified intersection cost
-
-        // If split is not beneficial, create leaf
-        if (bestSplit.cost >= leafCost && depth < 20) { // Allow some depth flexibility
-            return buildSimpleSplit(indices, aabbs, dataIndices, depth, nodeIndex);
+            return buildSimpleSplit(indices, aabbs, leafIndices, depth, nodeIndex);
         }
 
         // Partition based on SAH split
-        auto partitionPoint = std::partition(
-            const_cast<std::vector<Index>&>(indices).begin(),
-            const_cast<std::vector<Index>&>(indices).end(), [&](Index idx) {
-                const AABB& aabb = aabbs[idx];
-                float center;
-                switch (bestSplit.axis) {
-                case 0: center = (aabb.minX + aabb.maxX) * 0.5f; break;
-                case 1: center = (aabb.minY + aabb.maxY) * 0.5f; break;
-                case 2: center = (aabb.minZ + aabb.maxZ) * 0.5f; break;
-                default: center = 0.0f;
-                }
-                return center < bestSplit.position;
-            });
+        auto partitionPoint = std::partition(indices.begin(), indices.end(), [&](Index idx) {
+            const AABB& aabb = aabbs[idx];
+            float center;
+            switch (bestSplit.axis) {
+            case 0: center = (aabb.minX + aabb.maxX) * 0.5f; break;
+            case 1: center = (aabb.minY + aabb.maxY) * 0.5f; break;
+            case 2: center = (aabb.minZ + aabb.maxZ) * 0.5f; break;
+            default: center = 0.0f;
+            }
+            return center < bestSplit.position;
+        });
 
         size_t splitIndex = partitionPoint - indices.begin();
 
         // Ensure we have valid splits
         if (splitIndex == 0 || splitIndex == indices.size()) {
-            return buildSimpleSplit(indices, aabbs, dataIndices, depth, nodeIndex);
+            return buildSimpleSplit(indices, aabbs, leafIndices, depth, nodeIndex);
         }
 
         // Create left and right index arrays
@@ -498,8 +382,8 @@ private:
         std::vector<Index> rightIndices(indices.begin() + splitIndex, indices.end());
 
         // Build children recursively
-        Index leftChild = buildRecursiveTopDownImpl(leftIndices, aabbs, dataIndices, depth + 1);
-        Index rightChild = buildRecursiveTopDownImpl(rightIndices, aabbs, dataIndices, depth + 1);
+        Index leftChild = buildRecursiveTopDownImpl(leftIndices, aabbs, leafIndices, depth + 1);
+        Index rightChild = buildRecursiveTopDownImpl(rightIndices, aabbs, leafIndices, depth + 1);
 
         // Connect children to parent
         node.isLeaf = false;
@@ -531,9 +415,7 @@ private:
     SplitCandidate findBestSplitSAH(
         const std::vector<Index>& indices, const std::vector<AABB>& aabbs,
         const AABB& parentBounds) {
-        static constexpr int SAH_BUCKETS = 24;
-        static constexpr float TRAVERSAL_COST = 1.0f;
-        static constexpr float INTERSECTION_COST = 1.0f;
+        static constexpr int SAH_BUCKETS = 12;
 
         SplitCandidate bestSplit;
 
@@ -543,8 +425,8 @@ private:
 
         // Test each axis
         for (int axis = 0; axis < 3; ++axis) {
-            float extent;
-            float minVal, maxVal;
+            float extent = 0.0f;
+            float minVal = 0.0f, maxVal = 0.0f;
 
             switch (axis) {
             case 0:
@@ -578,7 +460,7 @@ private:
             // Distribute AABBs into buckets
             for (Index idx : indices) {
                 const AABB& aabb = aabbs[idx];
-                float center;
+                float center = 0.0f;
                 switch (axis) {
                 case 0: center = (aabb.minX + aabb.maxX) * 0.5f; break;
                 case 1: center = (aabb.minY + aabb.maxY) * 0.5f; break;
@@ -620,8 +502,7 @@ private:
                 // Calculate SAH cost
                 float leftSA = leftBounds.surfaceArea();
                 float rightSA = rightBounds.surfaceArea();
-                float cost = TRAVERSAL_COST + (leftSA / parentSA) * leftCount * INTERSECTION_COST
-                             + (rightSA / parentSA) * rightCount * INTERSECTION_COST;
+                float cost = (leftSA / parentSA) * leftCount + (rightSA / parentSA) * rightCount;
 
                 if (cost < bestSplit.cost) {
                     bestSplit.cost = cost;
@@ -638,8 +519,8 @@ private:
 
     // Fallback simple split method
     Index buildSimpleSplit(
-        const std::vector<Index>& indices, const std::vector<AABB>& aabbs,
-        const std::vector<Index>& dataIndices, int depth, Index nodeIndex) {
+        std::vector<Index>& indices, const std::vector<AABB>& aabbs,
+        std::vector<Index>& leafIndices, int depth, Index nodeIndex) {
         BVHNodeCPU& node = m_nodes[nodeIndex];
 
         // Find axis with largest extent
@@ -675,8 +556,8 @@ private:
         std::vector<Index> rightIndices(sortedIndices.begin() + median, sortedIndices.end());
 
         // Build children recursively
-        Index leftChild = buildRecursiveTopDownImpl(leftIndices, aabbs, dataIndices, depth + 1);
-        Index rightChild = buildRecursiveTopDownImpl(rightIndices, aabbs, dataIndices, depth + 1);
+        Index leftChild = buildRecursiveTopDownImpl(leftIndices, aabbs, leafIndices, depth + 1);
+        Index rightChild = buildRecursiveTopDownImpl(rightIndices, aabbs, leafIndices, depth + 1);
 
         // Connect children to parent
         node.isLeaf = false;
