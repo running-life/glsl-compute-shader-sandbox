@@ -9,7 +9,8 @@
 struct BVHNodeGPU {
     glm::vec4 aabbMin; // xyz = min bounds, w = leftChild index (or -1 if leaf)
     glm::vec4 aabbMax; // xyz = max bounds, w = rightChild index (or sphere count if leaf)
-    glm::uvec4 data; // x = first sphere index (if leaf), y = sphere count (if leaf), z,w = padding
+    glm::uvec4 data;   // x = first sphere index (if leaf), y = sphere count (if leaf), z = parent
+                       // index, w = sphere index
 
     BVHNodeGPU() : aabbMin(0), aabbMax(0), data(0) {}
 };
