@@ -29,6 +29,8 @@ private:
     GLuint sphereBuffer = 0;
     static constexpr int MAX_SPHERES = 64;
 
+    glm::vec3 sunPosition{0, 2000, -2000};
+
     float stepSize = 20.0f;
 
     // BVH
@@ -245,6 +247,8 @@ private:
 
         rayMarchingDBVHShader.setUniform("stepSize", stepSize);
 
+        rayMarchingDBVHShader.setUniform("sunPosition", sunPosition);
+
         rayMarchingDBVHPipeline.activate();
         glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, 2, -1, "Ray Marching DBVH");
         glDispatchCompute(
@@ -460,6 +464,8 @@ private:
 
     void buildDBVH() {
         // generate aabb
+
+        auto start = std::chrono::high_resolution_clock::now();
         std::vector<dynamic_bvh::AABB> aabbs;
         aabbs.reserve(packedSpheres.size());
 
@@ -478,9 +484,29 @@ private:
             dbvh.setDataIndex(index, i);
         }
 
+        auto end = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+        spdlog::info("DBVH build time: {} us", duration.count());
+
+        // print time
+        start = std::chrono::high_resolution_clock::now();
         // dbvh.rebuild();
+        dbvh.rebuild(aabbs);
+        end = std::chrono::high_resolution_clock::now();
+        duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+        spdlog::info("DBVH rbuild time: {} us", duration.count());
+
+        start = std::chrono::high_resolution_clock::now();
         dbvh.optimize();
+        end = std::chrono::high_resolution_clock::now();
+        duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+        spdlog::info("DBVH optimize time: {} us", duration.count());
+
+        start = std::chrono::high_resolution_clock::now();
         auto gpuNodes = dbvh.serializeForGPU();
+        end = std::chrono::high_resolution_clock::now();
+        duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+        spdlog::info("DBVH serialize time: {} us", duration.count());
 
         // const auto& nodes = bvh.getGPUNodes();
         // // for test, convert gpu nodes to DBVH gpu nodes

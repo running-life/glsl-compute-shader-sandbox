@@ -385,6 +385,37 @@ public:
         return oldToNewMapping;
     }
 
+    std::vector<unsigned int> rebuild(const std::vector<AABB>& aabbs) {
+        // Step 1: Reset the BVH structure
+        m_rootIndex = NULL_INDEX;
+        m_freeNodes.clear();
+        for (size_t i = 0; i < m_nodes.size(); ++i) {
+            m_nodes[i].reset();
+            m_freeNodes.push_back(static_cast<Index>(i));
+        }
+        std::reverse(m_freeNodes.begin(), m_freeNodes.end());
+
+        // Step 2: If no AABBs provided, return empty vector
+        if (aabbs.empty()) {
+            return {};
+        }
+
+        // Step 3: Create data indices for each AABB
+        std::vector<Index> dataIndices(aabbs.size());
+        std::iota(dataIndices.begin(), dataIndices.end(), 0);
+
+        // Step 4: Build new tree using the provided AABBs
+        m_rootIndex = buildRecursiveTopDown(aabbs, dataIndices);
+
+        // Step 5: Collect all leaf node indices
+        std::vector<Index> leafIndices;
+        if (m_rootIndex != NULL_INDEX) {
+            collectAllLeafIndices(m_rootIndex, leafIndices);
+        }
+
+        return leafIndices;
+    }
+
 private:
     // Helper method for top-down BVH construction
     Index buildRecursiveTopDown(

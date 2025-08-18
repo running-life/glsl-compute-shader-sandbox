@@ -16,6 +16,9 @@ uniform vec3 aabbMax;
 
 uniform float stepSize;
 
+// sun position
+uniform vec3 sunPosition;
+
 // BVH node structure
 struct BVHNode {
     vec4 aabbMin;    // xyz = min bounds, w = leftChild index (or -1 if leaf)
@@ -48,6 +51,7 @@ struct CandidateSphere {
 };
 
 const int MAX_CANDIDATE_SPHERES = 5;
+const int MAX_SUN_RAY_STEPS = 5;
 
 // Ray-AABB intersection function
 bool rayAABBIntersection(vec3 rayOrigin, vec3 rayDir, vec3 boxMin, vec3 boxMax, out float tMin, out float tMax) {
@@ -301,6 +305,94 @@ int countSpheresAtPoint2(vec3 point, CandidateSphere candidates[MAX_CANDIDATE_SP
     return count;
 }
 
+int countSphereOfSunRay(vec3 startPoint) {
+    CandidateSphere candidatesOfSunRay[MAX_CANDIDATE_SPHERES];
+    int candidateCountOfSunRay;
+
+    vec3 sunRayDirection = normalize(sunPosition - startPoint);
+    float tSunRay = stepSize;
+    collectCandidateSpheres(startPoint, sunRayDirection, tSunRay, 100000, candidatesOfSunRay, candidateCountOfSunRay);
+
+    int stepNum = MAX_SUN_RAY_STEPS;
+    int startIdxOfSunRay = 0;
+
+    int res = 0;
+
+    while(stepNum-- > 0) {
+        vec3 samplePointSunRay = startPoint + tSunRay * sunRayDirection;
+        int sphereCountSunRay = countSpheresAtPoint(samplePointSunRay, candidatesOfSunRay, candidateCountOfSunRay, tSunRay);
+        tSunRay += stepSize;
+        // int sphereCountSunRay = countSpheresAtPoint2(samplePointSunRay, candidatesOfSunRay, candidateCountOfSunRay, tSunRay - stepSize, startIdxOfSunRay, tSunRay);
+        res += sphereCountSunRay;
+    }
+    return res;
+}
+
+int countSphereOfSunRay2(vec3 startPoint) {
+    int candidateSet[MAX_CANDIDATE_SPHERES];
+    int candidateCount = 0;
+
+    vec3 sunRayDirection = normalize(sunPosition - startPoint);
+    float tSunRay = stepSize;
+
+    float tMin = stepSize;
+    float tMax = 10000;
+
+    const int MAX_STACK_SIZE = 10;
+    int stack[MAX_STACK_SIZE];
+    int stackPtr = 0;
+
+    stack[stackPtr++] = 0;
+
+    while (stackPtr > 0 && candidateCount < MAX_CANDIDATE_SPHERES) {
+        int nodeIndex = stack[--stackPtr];
+        
+        if (nodeIndex < 0 || nodeIndex >= nodeCount) continue;
+
+        BVHNode node = nodes[nodeIndex];
+        
+        float nodeTMin, nodeTMax;
+        bool rayHitsNode = rayAABBIntersection(startPoint, sunRayDirection, node.aabbMin.xyz, node.aabbMax.xyz, nodeTMin, nodeTMax);
+
+        // Only consider intersections within our tMin-tMax range
+        if (!rayHitsNode || nodeTMax < tMin || nodeTMin > tMax) {
+            continue;
+        }
+
+        if (node.aabbMin.w == -1.0) {
+            // Leaf node - add its sphere to candidates
+            candidateSet[candidateCount++] = int(node.data.w);
+        } else {
+            // Internal node - add children to stack
+            int leftChild = int(node.aabbMin.w);
+            int rightChild = int(node.aabbMax.w);
+
+            if (stackPtr < MAX_STACK_SIZE - 2) {
+                if (rightChild < nodeCount) stack[stackPtr++] = rightChild;
+                if (leftChild < nodeCount) stack[stackPtr++] = leftChild;
+            }
+        }
+    }
+
+    int res = 0;
+    int stepNum = MAX_SUN_RAY_STEPS;
+    while(stepNum-- > 0) {
+        vec3 samplePointSunRay = startPoint + tSunRay * sunRayDirection;
+        for(int i = 0; i < candidateCount; ++i) {
+            int sphereIdx = candidateSet[i];
+            vec3 sphereCenter = spheres[sphereIdx].centerAndRadius.xyz;
+            float sphereRadius = spheres[sphereIdx].centerAndRadius.w;
+            
+            if (distance(samplePointSunRay, sphereCenter) <= sphereRadius) {
+                res++;
+            }
+        }
+    }
+    
+    return res;
+}
+
+
 void main() {
     ivec2 gidx = ivec2(gl_GlobalInvocationID.xy);
     ivec2 size = imageSize(image);
@@ -328,7 +420,7 @@ void main() {
         CandidateSphere candidates[MAX_CANDIDATE_SPHERES];
         int candidateCount;
         collectCandidateSpheres(cameraPosition, rayDirection, t, tMax, candidates, candidateCount);
-        
+
         // Color accumulation
         float density = 0.0;
         float maxDensity = 70.0; // For normalization
@@ -341,7 +433,15 @@ void main() {
             // int sphereCount = countSpheresAtPoint(samplePoint, candidates, candidateCount, t);
             t += stepSize;
             int sphereCount = countSpheresAtPoint2(samplePoint, candidates, candidateCount, t - stepSize, startIdx, t);
+
+            if (sphereCount == 0) {
+                continue;
+            }
+
             density += float(sphereCount);
+            // density += float(countSphereOfSunRay(samplePoint));
+            density += float(countSphereOfSunRay2(samplePoint));
+
         }
         
         // Normalize density and map to color
