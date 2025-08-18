@@ -8,7 +8,7 @@
 
 namespace dynamic_bvh {
 
-typedef unsigned int Index;
+typedef int Index;
 constexpr Index NULL_INDEX = static_cast<Index>(-1);
 
 struct AABB {
@@ -82,7 +82,7 @@ public:
         std::reverse(m_freeNodes.begin(), m_freeNodes.end());
     }
 
-    unsigned int insert(const AABB& aabb) {
+    int insert(const AABB& aabb) {
         Index leafIndex = allocateNode();
 
         if (m_rootIndex == NULL_INDEX) {
@@ -138,7 +138,7 @@ public:
         return leafIndex;
     }
 
-    void remove(unsigned int index) {
+    void remove(int index) {
         if (index == NULL_INDEX) {
             return;
         }
@@ -176,7 +176,7 @@ public:
         }
     }
 
-    void update(unsigned int index, const AABB& aabb) {
+    void update(int index, const AABB& aabb) {
         if (index == NULL_INDEX) {
             return;
         }
@@ -197,7 +197,7 @@ public:
         }
     }
 
-    void setDataIndex(unsigned int nodeIndex, unsigned int dataIndex) {
+    void setDataIndex(int nodeIndex, int dataIndex) {
         m_nodes[nodeIndex].dataIndex = dataIndex;
     }
 
@@ -206,7 +206,7 @@ public:
      * * This operation rearranges the internal node array, invalidating any existing node indices
      * @return std::vector<Index> a mapping table from old index to new index
      */
-    std::vector<unsigned int> optimize() {
+    std::vector<int> optimize() {
         if (m_rootIndex == NULL_INDEX) {
             return {};
         }
@@ -284,7 +284,7 @@ public:
         return gpuNodes;
     }
 
-    std::vector<unsigned int> rebuild(const std::vector<AABB>& aabbs) {
+    std::vector<int> rebuild(const std::vector<AABB>& aabbs) {
         // Reset the BVH structure
         m_rootIndex = NULL_INDEX;
         m_freeNodes.clear();
@@ -562,7 +562,6 @@ private:
         return nodeIndex;
     }
 
-private:
     Index allocateNode() {
         if (m_freeNodes.empty()) {
             return NULL_INDEX;
@@ -646,7 +645,6 @@ private:
         }
     }
 
-private:
     struct OptimizeHelper {
         Index oldIndex = NULL_INDEX;
         Index order = 1000; // a large value
