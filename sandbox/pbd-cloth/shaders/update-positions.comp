@@ -1,0 +1,40 @@
+#version 460 core
+layout(local_size_x = 128) in;
+
+struct ClothParticle {
+  vec4 position;
+  vec4 oldPosition;
+  vec4 velocity;
+  float mass;
+  float invMass;
+  float padding[2];
+};
+
+layout(std430, binding = 0) buffer ParticleBuffer {
+  ClothParticle particles[];
+};
+
+uniform float dt;
+
+void main() {
+  uint index = gl_GlobalInvocationID.x;
+  if (index >= particles.length()) return;
+  
+  ClothParticle particle = particles[index];
+  
+  // 跳过固定粒子
+  if (particle.invMass == 0.0) return;
+  
+  // 根据位置变化更新速度
+  vec3 newVelocity = (particle.position.xyz - particle.oldPosition.xyz) / dt;
+  
+  // 限制速度以避免不稳定
+  float maxSpeed = 10.0;
+  if (length(newVelocity) > maxSpeed) {
+    newVelocity = normalize(newVelocity) * maxSpeed;
+  }
+  
+  particle.velocity.xyz = newVelocity;
+  
+  particles[index] = particle;
+}

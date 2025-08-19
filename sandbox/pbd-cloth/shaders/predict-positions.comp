@@ -1,0 +1,76 @@
+#version 460 core
+layout(local_size_x = 128) in;
+
+struct ClothParticle {
+  vec4 position;
+  vec4 oldPosition;
+  vec4 velocity;
+  float mass;
+  float invMass;
+  float padding[2];
+};
+
+layout(std430, binding = 0) buffer ParticleBuffer {
+  ClothParticle particles[];
+};
+
+uniform float dt;
+uniform float gravity;
+uniform float damping;
+uniform bool windEnabled;
+uniform vec3 windForce;
+
+void main() {
+  uint index = gl_GlobalInvocationID.x;
+  if (index >= particles.length()) return;
+  
+  ClothParticle particle = particles[index];
+  
+  // 跳过固定粒子
+  if (particle.invMass == 0.0) return;
+  
+  // 保存当前位置作为旧位置
+  particle.oldPosition = particle.position;
+  
+  // 应用重力
+  vec3 acceleration = vec3(0.0, gravity, 0.0);
+  
+  // 应用风力
+  if (windEnabled) {
+    acceleration += windForce * particle.invMass;
+  }
+  
+  // Verlet积分: x_new = x + v*dt + a*dt^2
+  vec3 newPos = particle.position.xyz + particle.velocity.xyz * dt + acceleration * dt * dt;
+  
+  // 限制位置变化以避免爆炸
+  vec3 deltaPos = newPos - particle.position.xyz;
+  float maxDelta = 0.5; // 最大位置变化
+  if (length(deltaPos) > maxDelta) {
+    deltaPos = normalize(deltaPos) * maxDelta;
+    newPos = particle.position.xyz + deltaPos;
+  }
+  
+  // 更新速度 (用于下一帧)
+  particle.velocity.xyz = (newPos - particle.position.xyz) / dt;
+  
+  // 限制速度以避免不稳定
+  float maxSpeed = 10.0;
+  if (length(particle.velocity.xyz) > maxSpeed) {
+    particle.velocity.xyz = normalize(particle.velocity.xyz) * maxSpeed;
+  }
+  
+  // 应用阻尼
+  particle.velocity.xyz *= damping;
+  
+  // 更新位置
+  particle.position.xyz = newPos;
+  
+  // 简单地面碰撞
+  if (particle.position.y < -2.0) {
+    particle.position.y = -2.0;
+    particle.velocity.y = abs(particle.velocity.y) * 0.3; // 反弹并减少能量
+  }
+  
+  particles[index] = particle;
+}

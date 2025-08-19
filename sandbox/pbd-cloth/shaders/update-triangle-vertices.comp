@@ -1,0 +1,57 @@
+#version 460 core
+layout(local_size_x = 128) in;
+
+struct ClothParticle {
+  vec4 position;
+  vec4 oldPosition;
+  vec4 velocity;
+  float mass;
+  float invMass;
+  float padding[2];
+};
+
+layout(std430, binding = 0) buffer ParticleBuffer {
+  ClothParticle particles[];
+};
+
+layout(std430, binding = 1) buffer TriangleVertexBuffer {
+  ClothParticle triangleVertices[];
+};
+
+uniform uint clothWidth;
+uniform uint clothHeight;
+
+void main() {
+  uint triangleIndex = gl_GlobalInvocationID.x;
+  
+  uint totalTriangles = (clothWidth - 1) * (clothHeight - 1) * 2;
+  if (triangleIndex >= totalTriangles) return;
+  
+  // 计算这个三角形属于哪个四边形
+  uint quadIndex = triangleIndex / 2;
+  bool isFirstTriangle = (triangleIndex % 2) == 0;
+  
+  uint quadY = quadIndex / (clothWidth - 1);
+  uint quadX = quadIndex % (clothWidth - 1);
+  
+  // 计算四边形的四个顶点索引
+  uint topLeft = quadY * clothWidth + quadX;
+  uint topRight = topLeft + 1;
+  uint bottomLeft = topLeft + clothWidth;
+  uint bottomRight = bottomLeft + 1;
+  
+  // 计算三角形顶点在三角形缓冲区中的索引
+  uint vertexBase = triangleIndex * 3;
+  
+  if (isFirstTriangle) {
+    // 第一个三角形: topLeft -> bottomLeft -> topRight
+    triangleVertices[vertexBase + 0] = particles[topLeft];
+    triangleVertices[vertexBase + 1] = particles[bottomLeft];
+    triangleVertices[vertexBase + 2] = particles[topRight];
+  } else {
+    // 第二个三角形: topRight -> bottomLeft -> bottomRight
+    triangleVertices[vertexBase + 0] = particles[topRight];
+    triangleVertices[vertexBase + 1] = particles[bottomLeft];
+    triangleVertices[vertexBase + 2] = particles[bottomRight];
+  }
+}

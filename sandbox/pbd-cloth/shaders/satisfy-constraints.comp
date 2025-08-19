@@ -1,0 +1,93 @@
+#version 460 core
+layout(local_size_x = 128) in;
+
+struct ClothParticle {
+  vec4 position;
+  vec4 oldPosition;
+  vec4 velocity;
+  float mass;
+  float invMass;
+  float padding[2];
+};
+
+struct Constraint {
+  uint particleA;
+  uint particleB;
+  float restLength;
+  float stiffness;
+};
+
+layout(std430, binding = 0) buffer ParticleBuffer {
+  ClothParticle particles[];
+};
+
+layout(std430, binding = 1) buffer ConstraintBuffer {
+  Constraint constraints[];
+};
+
+uniform float stiffness;
+
+void main() {
+  uint index = gl_GlobalInvocationID.x;
+  if (index >= constraints.length()) return;
+  
+  Constraint constraint = constraints[index];
+  
+  uint idxA = constraint.particleA;
+  uint idxB = constraint.particleB;
+  
+  // 获取粒子位置
+  vec3 posA = particles[idxA].position.xyz;
+  vec3 posB = particles[idxB].position.xyz;
+  
+  float invMassA = particles[idxA].invMass;
+  float invMassB = particles[idxB].invMass;
+  
+  // 如果两个粒子都是固定的，跳过
+  if (invMassA == 0.0 && invMassB == 0.0) return;
+  
+  // 计算约束
+  vec3 delta = posB - posA;
+  float currentLength = length(delta);
+  
+  if (currentLength < 1e-6) return; // 避免除零
+  
+  // 约束误差
+  float error = currentLength - constraint.restLength;
+  
+  // 只在误差超过阈值时进行修正
+  float errorThreshold = constraint.restLength * 0.01; // 1%的误差阈值
+  if (abs(error) < errorThreshold) return;
+  
+  // 约束方向
+  vec3 direction = delta / currentLength;
+  
+  // 计算约束修正
+  float totalInvMass = invMassA + invMassB;
+  if (totalInvMass < 1e-6) return;
+  
+  // 使用更保守的修正策略
+  float correctionMagnitude = error / totalInvMass * stiffness * constraint.stiffness * 0.5; // 减少修正强度
+  
+  // 限制修正强度以避免数值不稳定
+  float maxCorrection = constraint.restLength * 0.1; // 最大修正为约束长度的10%
+  correctionMagnitude = clamp(correctionMagnitude, -maxCorrection, maxCorrection);
+  
+  // 应用位置修正
+  vec3 correctionA = -correctionMagnitude * invMassA * direction;
+  vec3 correctionB = correctionMagnitude * invMassB * direction;
+  
+  // 使用原子操作或分离的修正步骤来减少竞争条件
+  // 这里我们使用更小的修正量来减少冲突的影响
+  if (invMassA > 0.0) {
+    // 使用线性混合来减少突变
+    vec3 newPosA = mix(posA, posA + correctionA, 0.8);
+    particles[idxA].position.xyz = newPosA;
+  }
+  
+  if (invMassB > 0.0) {
+    // 使用线性混合来减少突变
+    vec3 newPosB = mix(posB, posB + correctionB, 0.8);
+    particles[idxB].position.xyz = newPosB;
+  }
+}
